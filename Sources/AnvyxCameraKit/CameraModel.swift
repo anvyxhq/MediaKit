@@ -44,7 +44,7 @@ public final class CameraModel {
     nonisolated(unsafe) private let photoOutput = AVCapturePhotoOutput()
     nonisolated(unsafe) private var videoInput: AVCaptureDeviceInput?
     nonisolated(unsafe) private var captureDelegate: PhotoCaptureDelegate?
-    @ObservationIgnored private let queue = DispatchQueue(label: "com.anvora.camerakit.session")
+    @ObservationIgnored private let queue = DispatchQueue(label: "com.anvyx.camerakit.session")
 
     // Rotation (iOS 17 RotationCoordinator)
     @ObservationIgnored private weak var previewLayer: AVCaptureVideoPreviewLayer?
