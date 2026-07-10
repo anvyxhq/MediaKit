@@ -9,12 +9,13 @@ import SwiftUI
 import UIKit
 
 /// Owns a ``CropperView`` and exposes crop actions to SwiftUI.
+@Observable
 @MainActor
-public final class CropController: ObservableObject {
+public final class CropController {
     public let cropperView: CropperView
 
-    @Published public private(set) var canUndo = false
-    @Published public private(set) var canRedo = false
+    public private(set) var canUndo = false
+    public private(set) var canRedo = false
 
     public init(image: UIImage, configuration: CropConfiguration = .init()) {
         cropperView = CropperView(image: image, configuration: configuration)
@@ -70,7 +71,7 @@ public final class CropController: ObservableObject {
 /// }
 /// ```
 public struct ImageCropperView: UIViewRepresentable {
-    @ObservedObject private var controller: CropController
+    private let controller: CropController
 
     public init(controller: CropController) { self.controller = controller }
 

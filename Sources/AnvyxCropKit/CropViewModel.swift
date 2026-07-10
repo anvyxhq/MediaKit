@@ -6,6 +6,7 @@
 //
 
 import UIKit
+import Observation
 
 /// A normalized snapshot of the crop geometry, independent of view size — safe
 /// to persist and restore.
@@ -48,11 +49,12 @@ public struct CropDocument: Sendable {
 /// responsibility: manage the history of ``CropDocument`` states). The view
 /// supplies its current document and applies the returned one — so this logic
 /// is fully unit-testable without any view.
+@Observable
 @MainActor
-public final class CropViewModel: ObservableObject {
+public final class CropViewModel {
 
-    @Published public private(set) var canUndo = false
-    @Published public private(set) var canRedo = false
+    public private(set) var canUndo = false
+    public private(set) var canRedo = false
 
     private var undoStack: [CropDocument] = [] { didSet { canUndo = !undoStack.isEmpty } }
     private var redoStack: [CropDocument] = [] { didSet { canRedo = !redoStack.isEmpty } }

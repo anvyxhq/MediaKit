@@ -12,7 +12,7 @@ import SwiftUI
 /// panel (brightness/contrast/saturation + filter strength), and undo/redo.
 /// The CropKit equivalent of Mantis's `CropViewController`, SwiftUI-native and accessible.
 public struct CropEditor: View {
-    @StateObject private var controller: CropController
+    @State private var controller: CropController
     @State private var angle: CGFloat = 0
     @State private var showAdjust = false
 
@@ -29,7 +29,7 @@ public struct CropEditor: View {
                 configuration: CropConfiguration = .init(),
                 onDone: @escaping (UIImage?) -> Void,
                 onCancel: @escaping () -> Void = {}) {
-        _controller = StateObject(wrappedValue: CropController(image: image, configuration: configuration))
+        _controller = State(initialValue: CropController(image: image, configuration: configuration))
         self.configuration = configuration
         self.onDone = onDone
         self.onCancel = onCancel
