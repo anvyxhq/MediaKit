@@ -15,7 +15,7 @@ import UIKit
 /// - `scale`: zoom factor (≥ 1 typically).
 /// - `cropSize`: crop-box size on screen (points).
 /// - `imageViewSize`: the image-view size at zoom 1 (aspect-fit).
-public struct CropInfo: Equatable {
+public struct CropInfo: Equatable, Sendable {
     public var translation: CGPoint
     public var rotation: CGFloat
     public var scale: CGFloat

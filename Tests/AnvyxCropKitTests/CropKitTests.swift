@@ -6,7 +6,7 @@
 //
 
 import XCTest
-@testable import CropKit
+@testable import AnvyxCropKit
 
 @MainActor
 final class CropKitTests: XCTestCase {

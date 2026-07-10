@@ -6,7 +6,7 @@
 //
 
 import XCTest
-@testable import CameraKit
+@testable import AnvyxCameraKit
 
 @MainActor
 final class CameraKitTests: XCTestCase {
@@ -23,5 +23,3 @@ final class CameraKitTests: XCTestCase {
         _ = DataScannerView.isSupported
     }
 }
-
-extension CameraModel.FlashMode: Equatable {}

@@ -19,17 +19,16 @@ import PhotosUI
 public struct PhotoLibraryPicker<Label: View>: View {
     @State private var selection: PhotosPickerItem?
     private let onPick: (UIImage) -> Void
-    private let label: () -> Label
+    // `@Sendable` to match `PhotosPicker`'s `@Sendable` label builder.
+    private let label: @Sendable () -> Label
 
-    public init(onPick: @escaping (UIImage) -> Void, @ViewBuilder label: @escaping () -> Label) {
+    public init(onPick: @escaping (UIImage) -> Void, @ViewBuilder label: @escaping @Sendable () -> Label) {
         self.onPick = onPick
         self.label = label
     }
 
     public var body: some View {
-        PhotosPicker(selection: $selection, matching: .images, photoLibrary: .shared()) {
-            label()
-        }
+        PhotosPicker(selection: $selection, matching: .images, photoLibrary: .shared(), label: label)
         .onChange(of: selection) { _, newItem in
             guard let newItem else { return }
             Task {

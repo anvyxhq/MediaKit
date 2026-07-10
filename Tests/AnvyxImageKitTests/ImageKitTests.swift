@@ -6,7 +6,7 @@
 //
 
 import XCTest
-@testable import ImageKit
+@testable import AnvyxImageKit
 
 final class ImageKitTests: XCTestCase {
 
@@ -23,7 +23,14 @@ final class ImageKitTests: XCTestCase {
     }
 
     func testRoundTripUIImageToPixelBufferAndBack() {
-        let image = UIImage.solid(.blue, size: CGSize(width: 8, height: 8))
+        // Render at scale 1 so point size == pixel size (device scale would make
+        // the backing cgImage 2-3× larger than the 8×8 point size).
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+        let image = UIGraphicsImageRenderer(size: CGSize(width: 8, height: 8), format: format).image { ctx in
+            UIColor.blue.setFill()
+            ctx.fill(CGRect(x: 0, y: 0, width: 8, height: 8))
+        }
         guard let buffer = image.toCVPixelBuffer() else {
             return XCTFail("expected a pixel buffer")
         }

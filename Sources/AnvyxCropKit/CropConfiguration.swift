@@ -8,7 +8,7 @@
 import UIKit
 
 /// Crop output shape.
-public enum CropShape: Equatable {
+public enum CropShape: Equatable, Sendable {
     case rectangle
     case ellipse
     case roundedRect(cornerRadius: CGFloat)
@@ -27,7 +27,7 @@ public enum CropDialStyle: Equatable {
 }
 
 /// Crop-box aspect ratio.
-public enum CropAspectRatio: Equatable {
+public enum CropAspectRatio: Equatable, Sendable {
     case free
     case square
     /// A fixed width:height ratio.

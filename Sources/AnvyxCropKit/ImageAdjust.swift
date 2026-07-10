@@ -10,7 +10,7 @@ import CoreImage
 import CoreImage.CIFilterBuiltins
 
 /// Live color adjustments (brightness / contrast / saturation / exposure).
-public struct ImageAdjustments: Equatable {
+public struct ImageAdjustments: Equatable, Sendable {
     public var brightness: Float   // -1…1, 0 = none
     public var contrast: Float     //  0…2, 1 = none
     public var saturation: Float   //  0…2, 1 = none
@@ -26,7 +26,7 @@ public struct ImageAdjustments: Equatable {
 
 /// Preset photo filters. `mono…process` are parameter-free `CIPhotoEffect`s
 /// blended by intensity; `sepia`/`vignette` take a real intensity coefficient.
-public enum ColorFilter: String, CaseIterable, Equatable {
+public enum ColorFilter: String, CaseIterable, Equatable, Sendable {
     case none, mono, noir, fade, chrome, instant, transfer, tonal, process, sepia, vignette
 
     var ciName: String? {

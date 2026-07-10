@@ -39,11 +39,19 @@ public final class CameraModel {
     public var flashMode: FlashMode = .auto
 
     /// The session to feed into `CameraPreview`.
+    ///
+    /// `AVCaptureSession` is not `Sendable`. It is created here and thereafter
+    /// mutated/read only inside `queue.async` blocks on the serial session
+    /// `queue`, which serializes all access; `nonisolated(unsafe)` lets those
+    /// off-main blocks reach it without hopping to the main actor.
     nonisolated(unsafe) public let session = AVCaptureSession()
 
+    /// Not `Sendable`; configured and used only on the serial session `queue`.
     nonisolated(unsafe) private let photoOutput = AVCapturePhotoOutput()
-    nonisolated(unsafe) private var videoInput: AVCaptureDeviceInput?
-    nonisolated(unsafe) private var captureDelegate: PhotoCaptureDelegate?
+    // Internal AVFoundation plumbing, not observable UI state. Mutated only on
+    // the serial session `queue`, so `nonisolated(unsafe)` is sound.
+    @ObservationIgnored nonisolated(unsafe) private var videoInput: AVCaptureDeviceInput?
+    @ObservationIgnored nonisolated(unsafe) private var captureDelegate: PhotoCaptureDelegate?
     @ObservationIgnored private let queue = DispatchQueue(label: "com.anvyx.camerakit.session")
 
     // Rotation (iOS 17 RotationCoordinator)
@@ -75,6 +83,7 @@ public final class CameraModel {
             return
         }
 
+        let position = self.position
         await withCheckedContinuation { continuation in
             queue.async { [self] in
                 session.beginConfiguration()
@@ -129,9 +138,9 @@ public final class CameraModel {
 
     public func capturePhoto() async -> UIImage? {
         guard isConfigured else { return nil }
-        let settings = AVCapturePhotoSettings()
-        settings.flashMode = avFlashMode
-        settings.photoQualityPrioritization = .quality
+        // `AVCapturePhotoSettings` is not `Sendable`; build it on the session
+        // `queue` and hand it only Sendable values captured from the main actor.
+        let flashMode = avFlashMode
         let angle = captureRotationAngle
 
         return await withCheckedContinuation { continuation in
@@ -141,6 +150,9 @@ public final class CameraModel {
             }
             captureDelegate = delegate
             queue.async { [self] in
+                let settings = AVCapturePhotoSettings()
+                settings.flashMode = flashMode
+                settings.photoQualityPrioritization = .quality
                 if let connection = photoOutput.connection(with: .video),
                    connection.isVideoRotationAngleSupported(angle) {
                     connection.videoRotationAngle = angle
@@ -233,9 +245,9 @@ public final class CameraModel {
         captureRotationAngle = coordinator.videoRotationAngleForHorizonLevelCapture
 
         rotationObservations.append(
-            coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.new]) { [weak previewLayer] _, change in
+            coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.new]) { [weak self] _, change in
                 guard let angle = change.newValue else { return }
-                Task { @MainActor in previewLayer?.connection?.videoRotationAngle = angle }
+                Task { @MainActor in self?.previewLayer?.connection?.videoRotationAngle = angle }
             }
         )
         rotationObservations.append(
@@ -254,7 +266,7 @@ public final class CameraModel {
         }
     }
 
-    private static func device(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
+    nonisolated private static func device(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
         AVCaptureDevice.DiscoverySession(
             deviceTypes: [.builtInTripleCamera, .builtInDualCamera, .builtInWideAngleCamera],
             mediaType: .video,

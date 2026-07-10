@@ -36,7 +36,11 @@ public extension CVPixelBuffer {
     }
 
     /// PNG-encoded data for the buffer, or `nil` if rendering fails.
-    func pngData(scale: CGFloat = UIScreen.main.scale) -> Data? {
+    ///
+    /// `scale` only sets the intermediate `UIImage.scale`; PNG output encodes raw
+    /// pixels, so the produced data is identical regardless. Defaults to `1` (a
+    /// nonisolated literal) so the call stays off the main actor.
+    func pngData(scale: CGFloat = 1) -> Data? {
         let ciImage = CIImage(cvPixelBuffer: self)
         guard let cgImage = SharedCIContext.context.createCGImage(ciImage, from: ciImage.extent) else {
             return nil
