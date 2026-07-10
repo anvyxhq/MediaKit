@@ -38,6 +38,12 @@ public final class CameraModel {
     public private(set) var error: CameraError?
     public var flashMode: FlashMode = .auto
 
+    /// `true` while the capture session is interrupted (incoming call, audio/video
+    /// route change, app backgrounded, resources in use by another client…).
+    public private(set) var isInterrupted = false
+    /// Why the session is currently interrupted (`nil` when not interrupted).
+    public private(set) var interruptionReason: AVCaptureSession.InterruptionReason?
+
     /// The session to feed into `CameraPreview`.
     ///
     /// `AVCaptureSession` is not `Sendable`. It is created here and thereafter
@@ -58,9 +64,51 @@ public final class CameraModel {
     @ObservationIgnored private weak var previewLayer: AVCaptureVideoPreviewLayer?
     @ObservationIgnored private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
     @ObservationIgnored private var rotationObservations: [NSKeyValueObservation] = []
+    @ObservationIgnored private var interruptionTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var captureRotationAngle: CGFloat = 90
 
-    public init() {}
+    public init() {
+        observeInterruptions()
+    }
+
+    deinit {
+        interruptionTasks.forEach { $0.cancel() }
+    }
+
+    // MARK: - Interruptions
+
+    /// Track `AVCaptureSession` interruption / resume for this session so the UI
+    /// can react (e.g. dim the preview during a call). Uses the notification
+    /// AsyncSequence — no manual observer tokens, no polling.
+    private func observeInterruptions() {
+        interruptionTasks.forEach { $0.cancel() }
+        let center = NotificationCenter.default
+        interruptionTasks = [
+            Task { @MainActor [weak self] in
+                for await note in center.notifications(named: AVCaptureSession.wasInterruptedNotification) {
+                    self?.beginInterruption(note)
+                }
+            },
+            Task { @MainActor [weak self] in
+                for await note in center.notifications(named: AVCaptureSession.interruptionEndedNotification) {
+                    self?.endInterruption(note)
+                }
+            },
+        ]
+    }
+
+    func beginInterruption(_ note: Notification) {
+        guard (note.object as? AVCaptureSession) === session else { return }
+        let raw = (note.userInfo?[AVCaptureSessionInterruptionReasonKey] as? NSNumber)?.intValue
+        interruptionReason = raw.flatMap(AVCaptureSession.InterruptionReason.init(rawValue:))
+        isInterrupted = true
+    }
+
+    func endInterruption(_ note: Notification) {
+        guard (note.object as? AVCaptureSession) === session else { return }
+        isInterrupted = false
+        interruptionReason = nil
+    }
 
     // MARK: - Authorization
 
