@@ -9,7 +9,7 @@ import UIKit
 
 /// A normalized snapshot of the crop geometry, independent of view size — safe
 /// to persist and restore.
-public struct CropState: Codable, Equatable {
+public struct CropState: Codable, Equatable, Sendable {
     public var normalizedBox: CGRect      // crop box as a fraction of the image frame
     public var zoomScale: CGFloat
     public var normalizedOffset: CGPoint  // content offset / content size
@@ -25,7 +25,7 @@ public struct CropState: Codable, Equatable {
 }
 
 /// The full, UI-independent editor state (the "document" being edited).
-public struct CropDocument {
+public struct CropDocument: Sendable {
     public var workingImage: UIImage
     public var crop: CropState
     public var adjustments: ImageAdjustments
