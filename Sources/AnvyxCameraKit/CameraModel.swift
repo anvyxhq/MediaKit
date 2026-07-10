@@ -159,6 +159,39 @@ public final class CameraModel {
         isConfigured = true
     }
 
+    // MARK: - Hardware Camera Control (iPhone 16+)
+
+    /// Add the system zoom and exposure-bias sliders driven by the hardware
+    /// Camera Control button. No-op on devices/sessions without Camera Control
+    /// support (`canAddControl` returns false). Call after `configure()`.
+    public func enableHardwareCameraControls() {
+        queue.async { [self] in
+            guard let device = videoInput?.device else { return }
+            session.beginConfiguration()
+            defer { session.commitConfiguration() }
+            let controls: [AVCaptureControl] = [
+                AVCaptureSystemZoomSlider(device: device),
+                AVCaptureSystemExposureBiasSlider(device: device),
+            ]
+            for control in controls where session.canAddControl(control) {
+                session.addControl(control)
+            }
+        }
+    }
+
+    /// Add a custom Camera Control built by `make` (e.g. an `AVCaptureSlider`).
+    /// The control is constructed on the session queue. No-op if the session can't
+    /// accept it (unsupported, or `maxControlsCount` reached).
+    public func addCameraControl(_ make: @escaping @Sendable () -> AVCaptureControl) {
+        queue.async { [self] in
+            let control = make()
+            guard session.canAddControl(control) else { return }
+            session.beginConfiguration()
+            session.addControl(control)
+            session.commitConfiguration()
+        }
+    }
+
     public func start() {
         queue.async { [self] in
             guard !session.isRunning else { return }
