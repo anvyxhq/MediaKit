@@ -9,7 +9,8 @@ import SwiftUI
 
 /// A ready-to-use SwiftUI crop screen: interactive cropper + toolbar (aspect,
 /// shape, filter, rotate, flip, reset), a fine-rotation dial, an adjustments
-/// panel (brightness/contrast/saturation + filter strength), and undo/redo.
+/// panel (brightness/contrast/saturation/temperature/tint/vibrance + filter
+/// strength), and undo/redo.
 /// The CropKit equivalent of Mantis's `CropViewController`, SwiftUI-native and accessible.
 public struct CropEditor: View {
     @State private var controller: CropController
@@ -19,6 +20,9 @@ public struct CropEditor: View {
     @State private var brightness: Float = 0
     @State private var contrast: Float = 1
     @State private var saturation: Float = 1
+    @State private var temperature: Float = 6500
+    @State private var tint: Float = 0
+    @State private var vibrance: Float = 0
     @State private var intensity: CGFloat = 1
 
     private let configuration: CropConfiguration
@@ -70,6 +74,15 @@ public struct CropEditor: View {
             slider("Saturation", value: $saturation, range: 0...2, reset: 1) {
                 controller.adjustments = current()
             }
+            slider("Temperature", value: $temperature, range: 3000...9000, reset: 6500) {
+                controller.adjustments = current()
+            }
+            slider("Tint", value: $tint, range: -50...50, reset: 0) {
+                controller.adjustments = current()
+            }
+            slider("Vibrance", value: $vibrance, range: -1...1, reset: 0) {
+                controller.adjustments = current()
+            }
             HStack {
                 Text("Filter").frame(width: 90, alignment: .leading).font(.caption)
                 Slider(value: $intensity, in: 0...1) { editing in
@@ -83,7 +96,8 @@ public struct CropEditor: View {
     }
 
     private func current() -> ImageAdjustments {
-        ImageAdjustments(brightness: brightness, contrast: contrast, saturation: saturation)
+        ImageAdjustments(brightness: brightness, contrast: contrast, saturation: saturation,
+                         temperature: temperature, tint: tint, vibrance: vibrance)
     }
 
     private func slider(_ title: String, value: Binding<Float>, range: ClosedRange<Float>,
@@ -138,6 +152,7 @@ public struct CropEditor: View {
 
     private func reset() {
         brightness = 0; contrast = 1; saturation = 1; intensity = 1
+        temperature = 6500; tint = 0; vibrance = 0
         controller.reset()
     }
 

@@ -60,4 +60,34 @@ final class ColorGradeTests: XCTestCase {
         XCTAssertLessThanOrEqual(abs(Int(px[0]) - Int(px[1])), 6)
         XCTAssertLessThanOrEqual(abs(Int(px[1]) - Int(px[2])), 6)
     }
+
+    // MARK: - Intensity
+
+    func testScaledToZeroIsNeutral() {
+        XCTAssertTrue(ColorGradePreset.vivid.grade.scaled(by: 0).isNeutral)
+    }
+
+    func testScaledToOneEqualsFullGrade() {
+        XCTAssertEqual(ColorGradePreset.cinematic.grade.scaled(by: 1), ColorGradePreset.cinematic.grade)
+    }
+
+    func testScaledClampsOutOfRange() {
+        let full = ColorGradePreset.sunset.grade
+        XCTAssertTrue(full.scaled(by: -3).isNeutral)
+        XCTAssertEqual(full.scaled(by: 5), full)
+    }
+
+    func testZeroIntensityIsPassthrough() {
+        let src = image()
+        XCTAssertTrue(ColorGradePreset.vivid.apply(to: src, intensity: 0) === src)
+    }
+
+    func testHalfIntensityDiffersFromBothSourceAndFull() {
+        let src = image()
+        let base = firstPixel(src)
+        let full = firstPixel(ColorGradePreset.vivid.apply(to: src, intensity: 1))
+        let half = firstPixel(ColorGradePreset.vivid.apply(to: src, intensity: 0.5))
+        XCTAssertNotEqual(half, base, "half intensity should still change pixels")
+        XCTAssertNotEqual(half, full, "half intensity should be weaker than full")
+    }
 }

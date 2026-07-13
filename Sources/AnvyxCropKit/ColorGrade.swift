@@ -48,6 +48,26 @@ public struct ColorGrade: Sendable, Equatable {
         temperature == 6500 && tint == 0 && saturation == 1 && contrast == 1 && brightness == 0 && vibrance == 0
     }
 
+    /// A copy interpolated toward neutral by `intensity` (clamped to `0…1`):
+    /// `0` yields a neutral grade (no-op), `1` yields the full look.
+    public func scaled(by intensity: Double) -> ColorGrade {
+        let t = min(max(intensity, 0), 1)
+        return ColorGrade(
+            temperature: 6500 + (temperature - 6500) * t,
+            tint: tint * t,
+            saturation: 1 + (saturation - 1) * t,
+            contrast: 1 + (contrast - 1) * t,
+            brightness: brightness * t,
+            vibrance: vibrance * t
+        )
+    }
+
+    /// Apply the grade at `intensity` (`0…1`), returning a new `CGImage`
+    /// (or the input unchanged when the scaled grade is neutral).
+    public func apply(to image: CGImage, intensity: Double, context: CIContext = CIContext(options: nil)) -> CGImage {
+        scaled(by: intensity).apply(to: image, context: context)
+    }
+
     /// Apply the grade, returning a new `CGImage` (or the input unchanged when neutral).
     public func apply(to image: CGImage, context: CIContext = CIContext(options: nil)) -> CGImage {
         guard !isNeutral else { return image }
@@ -113,5 +133,10 @@ public enum ColorGradePreset: String, CaseIterable, Sendable {
     /// Apply this preset to an image.
     public func apply(to image: CGImage, context: CIContext = CIContext(options: nil)) -> CGImage {
         grade.apply(to: image, context: context)
+    }
+
+    /// Apply this preset at `intensity` (`0…1`) — dial the look up or down.
+    public func apply(to image: CGImage, intensity: Double, context: CIContext = CIContext(options: nil)) -> CGImage {
+        grade.apply(to: image, intensity: intensity, context: context)
     }
 }
