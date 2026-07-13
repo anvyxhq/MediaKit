@@ -48,9 +48,12 @@ public enum ImageCropper {
     /// Rotate by a multiple of 90° (exact, lossless re-orientation).
     public static func rotated90(_ image: UIImage, quarterTurns: Int) -> UIImage? {
         let turns = ((quarterTurns % 4) + 4) % 4
-        guard turns != 0, let cg = image.cgImage else { return image }
+        guard turns != 0, image.cgImage != nil else { return image }
         let radians = CGFloat(turns) * .pi / 2
-        let w = CGFloat(cg.width), h = CGFloat(cg.height)
+        // Use point dimensions — opaqueFormat already applies image.scale, so using
+        // pixel dimensions here would multiply the scale in again and the image
+        // would grow by `scale`× on every call (repeated rotate → runaway freeze).
+        let w = image.size.width, h = image.size.height
         let newSize = (turns % 2 == 0) ? CGSize(width: w, height: h) : CGSize(width: h, height: w)
         let renderer = UIGraphicsImageRenderer(size: newSize, format: opaqueFormat(image))
         return renderer.image { ctx in
@@ -65,8 +68,8 @@ public enum ImageCropper {
 
     /// Mirror horizontally and/or vertically (exact).
     public static func flipped(_ image: UIImage, horizontally: Bool, vertically: Bool) -> UIImage? {
-        guard horizontally || vertically, let cg = image.cgImage else { return image }
-        let size = CGSize(width: cg.width, height: cg.height)
+        guard horizontally || vertically, image.cgImage != nil else { return image }
+        let size = image.size   // points — opaqueFormat applies image.scale (avoid double scaling)
         let renderer = UIGraphicsImageRenderer(size: size, format: opaqueFormat(image))
         return renderer.image { ctx in
             let c = ctx.cgContext

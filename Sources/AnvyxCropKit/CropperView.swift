@@ -396,7 +396,12 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         refreshDisplay()
     }
 
+    /// When true, property `didSet`s skip rendering so a batch update (undo/redo
+    /// restore) renders once instead of once per changed property.
+    private var isBatchUpdating = false
+
     private func refreshDisplay() {
+        guard !isBatchUpdating else { return }
         // Render the small preview base — fast enough to keep slider drags smooth.
         displayImage = ImageCropper.process(previewBase, adjustments: adjustments,
                                             filter: colorFilter, filterIntensity: filterIntensity,
@@ -462,6 +467,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     }
 
     private func apply(document doc: CropDocument) {
+        isBatchUpdating = true
         workingImage = doc.workingImage
         rebuildPreviewBase()
         adjustments = doc.adjustments
@@ -473,6 +479,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         configuration.shape = doc.shape
         overlay.shape = doc.shape
         didInitialLayout = true
+        isBatchUpdating = false
         refreshDisplay()
         setNeedsLayout(); layoutIfNeeded()
         restore(doc.crop)
