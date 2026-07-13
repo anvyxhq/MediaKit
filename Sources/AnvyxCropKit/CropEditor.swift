@@ -138,6 +138,13 @@ public struct CropEditor: View {
                 }
             } label: { icon("camera.filters") }.accessibilityLabel("Color filter")
 
+            Menu {
+                button("None") { controller.filmPreset = nil }
+                ForEach(FilmPreset.allCases, id: \.self) { p in
+                    button(p.displayName) { controller.filmPreset = p }
+                }
+            } label: { icon("photo.stack") }.accessibilityLabel("Film preset")
+
             button("slider.horizontal.3", "Adjustments") { showAdjust.toggle() }
             button("rotate.left", "Rotate 90 degrees") { controller.rotate90() }
             button("arrow.left.and.right", "Flip") { controller.flip(horizontally: true) }
@@ -153,6 +160,7 @@ public struct CropEditor: View {
     private func reset() {
         brightness = 0; contrast = 1; saturation = 1; intensity = 1
         temperature = 6500; tint = 0; vibrance = 0
+        controller.filmPreset = nil
         controller.reset()
     }
 

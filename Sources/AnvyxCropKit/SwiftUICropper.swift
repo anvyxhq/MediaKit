@@ -57,6 +57,11 @@ public final class CropController {
         get { cropperView.adjustments }
         set { cropperView.setAdjustments(newValue) }
     }
+    /// Instagram-style film preset applied live (`nil` = none).
+    public var filmPreset: FilmPreset? {
+        get { cropperView.filmPreset }
+        set { cropperView.setFilmPreset(newValue) }
+    }
     /// Call at the start of a slider drag so the whole drag is one undo step.
     public func beginAdjustment() { cropperView.beginAdjustment() }
 }
