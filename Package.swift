@@ -17,13 +17,20 @@ let package = Package(
         .library(name: "AnvyxImageKit", targets: ["AnvyxImageKit"]),
         .library(name: "AnvyxCameraKit", targets: ["AnvyxCameraKit"]),
         .library(name: "AnvyxCropKit", targets: ["AnvyxCropKit"]),
+        .library(name: "AnvyxScannerKit", targets: ["AnvyxScannerKit"]),
     ],
     targets: [
         .target(name: "AnvyxImageKit", swiftSettings: concurrencyBaseline),
         .target(name: "AnvyxCameraKit", swiftSettings: concurrencyBaseline),
         .target(name: "AnvyxCropKit", swiftSettings: concurrencyBaseline),
+        .target(
+            name: "AnvyxScannerKit",
+            dependencies: ["AnvyxCameraKit", "AnvyxCropKit"],
+            swiftSettings: concurrencyBaseline
+        ),
         .testTarget(name: "AnvyxImageKitTests", dependencies: ["AnvyxImageKit"], swiftSettings: concurrencyBaseline),
         .testTarget(name: "AnvyxCameraKitTests", dependencies: ["AnvyxCameraKit"], swiftSettings: concurrencyBaseline),
         .testTarget(name: "AnvyxCropKitTests", dependencies: ["AnvyxCropKit"], swiftSettings: concurrencyBaseline),
+        .testTarget(name: "AnvyxScannerKitTests", dependencies: ["AnvyxScannerKit"], swiftSettings: concurrencyBaseline),
     ]
 )

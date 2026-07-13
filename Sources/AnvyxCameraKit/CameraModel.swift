@@ -60,6 +60,11 @@ public final class CameraModel {
     @ObservationIgnored nonisolated(unsafe) private var captureDelegate: PhotoCaptureDelegate?
     @ObservationIgnored private let queue = DispatchQueue(label: "com.anvyx.camerakit.session")
 
+    // Live video-frame streaming (for on-device Vision analysis, e.g. a scanner).
+    @ObservationIgnored nonisolated(unsafe) private let videoDataOutput = AVCaptureVideoDataOutput()
+    @ObservationIgnored private let frameForwarder = FrameForwarder()
+    @ObservationIgnored private let frameQueue = DispatchQueue(label: "com.anvyx.camerakit.frames")
+
     // Rotation (iOS 17 RotationCoordinator)
     @ObservationIgnored private weak var previewLayer: AVCaptureVideoPreviewLayer?
     @ObservationIgnored private var rotationCoordinator: AVCaptureDevice.RotationCoordinator?
@@ -146,6 +151,13 @@ public final class CameraModel {
                     photoOutput.maxPhotoQualityPrioritization = .quality
                     session.addOutput(photoOutput)
                 }
+                videoDataOutput.alwaysDiscardsLateVideoFrames = true
+                videoDataOutput.videoSettings = [
+                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+                ]
+                if session.canAddOutput(videoDataOutput) {
+                    session.addOutput(videoDataOutput)
+                }
                 session.commitConfiguration()
                 continuation.resume()
             }
@@ -157,6 +169,27 @@ public final class CameraModel {
         }
         updateZoomRange()
         isConfigured = true
+    }
+
+    // MARK: - Live video frames
+
+    /// Stream live camera frames for on-device analysis (e.g. document/text
+    /// detection). `handler` is called on a background queue for each frame —
+    /// keep it fast and hop to the main actor only to publish results. Call
+    /// ``stopVideoFrames()`` when done.
+    public func startVideoFrames(_ handler: @escaping @Sendable (CMSampleBuffer) -> Void) {
+        frameForwarder.onFrame = handler
+        queue.async { [self] in
+            videoDataOutput.setSampleBufferDelegate(frameForwarder, queue: frameQueue)
+        }
+    }
+
+    /// Stop delivering live frames (see ``startVideoFrames(_:)``).
+    public func stopVideoFrames() {
+        frameForwarder.onFrame = nil
+        queue.async { [self] in
+            videoDataOutput.setSampleBufferDelegate(nil, queue: nil)
+        }
     }
 
     // MARK: - Hardware Camera Control (iPhone 16+)
@@ -398,6 +431,17 @@ public final class CameraModel {
             mediaType: .video,
             position: position
         ).devices.first
+    }
+}
+
+/// Forwards `AVCaptureVideoDataOutput` sample buffers to a `Sendable` handler.
+/// `onFrame` is set on the main actor and read on the frame queue; a plain
+/// reference assignment is atomic, so this fire-and-forget forwarding is sound.
+final class FrameForwarder: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate, @unchecked Sendable {
+    nonisolated(unsafe) var onFrame: (@Sendable (CMSampleBuffer) -> Void)?
+
+    func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        onFrame?(sampleBuffer)
     }
 }
 

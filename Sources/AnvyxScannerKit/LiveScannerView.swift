@@ -1,0 +1,82 @@
+//
+//  LiveScannerView.swift
+//  ScannerKit
+//
+//  Created by AnhPT on 13/07/2026.
+//
+
+import SwiftUI
+import AnvyxCameraKit
+
+/// A ready-to-use live scanner screen: camera preview + live document-frame or
+/// text-underline overlay + a shutter. In document mode the shutter returns every
+/// detected document, perspective-corrected; in text mode it returns the photo.
+///
+/// ```swift
+/// LiveScannerView(mode: .document, maximumDocuments: 3) { pages in
+///     self.captured = pages          // [UIImage] → feed to AnvyxDocProcessingKit
+/// } onCancel: { dismiss() }
+/// ```
+public struct LiveScannerView: View {
+    @State private var scanner: LiveScanner
+    private let onCapture: ([UIImage]) -> Void
+    private let onCancel: () -> Void
+
+    public init(
+        mode: LiveScanner.Mode = .document,
+        maximumDocuments: Int = 3,
+        onCapture: @escaping ([UIImage]) -> Void,
+        onCancel: @escaping () -> Void = {}
+    ) {
+        _scanner = State(initialValue: LiveScanner(mode: mode, maximumDocuments: maximumDocuments))
+        self.onCapture = onCapture
+        self.onCancel = onCancel
+    }
+
+    public var body: some View {
+        ZStack {
+            CameraPreview(session: scanner.camera.session).ignoresSafeArea()
+            ScannerOverlay(quads: scanner.quads, textLines: scanner.textLines)
+                .ignoresSafeArea()
+
+            VStack {
+                HStack {
+                    button("xmark", "Cancel") { onCancel() }
+                    Spacer()
+                    Picker("Mode", selection: $scanner.mode) {
+                        Text("Document").tag(LiveScanner.Mode.document)
+                        Text("Text").tag(LiveScanner.Mode.text)
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(maxWidth: 220)
+                    Spacer()
+                    Color.clear.frame(width: 24, height: 24)   // balances the leading button
+                }
+                .padding()
+
+                Spacer()
+
+                Button {
+                    Task { onCapture(await scanner.capture()) }
+                } label: {
+                    Circle().fill(.white)
+                        .frame(width: 70, height: 70)
+                        .overlay(Circle().stroke(.white, lineWidth: 4).padding(4))
+                }
+                .padding(.bottom, 30)
+                .accessibilityLabel("Capture")
+            }
+            .foregroundStyle(.white)
+        }
+        .background(Color.black)
+        .task { await scanner.start() }
+        .onDisappear { scanner.stop() }
+    }
+
+    private func button(_ system: String, _ label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: system).font(.system(size: 20, weight: .semibold))
+        }
+        .accessibilityLabel(label)
+    }
+}
