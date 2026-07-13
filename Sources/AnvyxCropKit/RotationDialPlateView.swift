@@ -11,7 +11,8 @@ import UIKit
 /// Rotate the plate with a finger; a fixed top pointer marks the current angle.
 public final class RotationDialPlateView: UIView {
 
-    /// Maximum deflection each way, in radians (default ±180° — free rotation).
+    /// Snap-to-0 threshold basis, in radians. The plate rotates a full 360°
+    /// continuously, wrapping back to 0 after a complete turn.
     public var range: CGFloat = .pi
     public var onChange: ((CGFloat) -> Void)?
     public private(set) var angle: CGFloat = 0 { didSet { setNeedsDisplay() } }
@@ -28,8 +29,16 @@ public final class RotationDialPlateView: UIView {
     }
     @available(*, unavailable) public required init?(coder: NSCoder) { fatalError() }
 
+    /// Normalize any angle into `(-π, π]` so a full turn wraps back to 0.
+    private func wrapped(_ value: CGFloat) -> CGFloat {
+        let twoPi = 2 * CGFloat.pi
+        var x = value.truncatingRemainder(dividingBy: twoPi)
+        if x > .pi { x -= twoPi } else if x <= -.pi { x += twoPi }
+        return x
+    }
+
     public func setAngle(_ value: CGFloat) {
-        angle = min(max(value, -range), range)
+        angle = wrapped(value)
         onChange?(angle)
     }
 
@@ -42,7 +51,8 @@ public final class RotationDialPlateView: UIView {
         case .changed:
             guard let last = lastTouchAngle else { return }
             lastTouchAngle = touchAngle
-            var a = min(max(angle + (touchAngle - last), -range), range)
+            // Wrap the incremental delta too, so crossing the ±π seam is seamless.
+            var a = wrapped(angle + wrapped(touchAngle - last))   // full 360° — wraps at a turn
             if abs(a) < range * 0.03 {
                 a = 0
                 if !wasSnapped { haptic.selectionChanged(); wasSnapped = true }

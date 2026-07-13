@@ -7,11 +7,13 @@
 
 import UIKit
 
-/// A horizontal rotation dial (±`range`). Drag to change the angle; it
-/// snaps to 0 with haptic feedback. Wire ``onChange`` to `CropperView.rotationAngle`.
+/// A horizontal rotation dial. Drag to change the angle — it rotates a full 360°
+/// continuously, wrapping back to 0 after a complete turn, and snaps to 0 with
+/// haptic feedback. Wire ``onChange`` to `CropperView.rotationAngle`.
 public final class RotationDialView: UIView {
 
-    /// Maximum deflection each way, in radians (default ±180° — free rotation).
+    /// Angle swept by a half-width drag, in radians; also sets the snap-to-0
+    /// threshold. A full-width drag rotates a full 360°.
     public var range: CGFloat = .pi
     public var onChange: ((CGFloat) -> Void)?
 
@@ -31,8 +33,16 @@ public final class RotationDialView: UIView {
     }
     @available(*, unavailable) public required init?(coder: NSCoder) { fatalError() }
 
+    /// Normalize any angle into `(-π, π]` so a full turn wraps back to 0.
+    private func wrapped(_ value: CGFloat) -> CGFloat {
+        let twoPi = 2 * CGFloat.pi
+        var x = value.truncatingRemainder(dividingBy: twoPi)
+        if x > .pi { x -= twoPi } else if x <= -.pi { x += twoPi }
+        return x
+    }
+
     public func setAngle(_ value: CGFloat) {
-        angle = min(max(value, -range), range)
+        angle = wrapped(value)
         onChange?(angle)
     }
 
@@ -42,7 +52,7 @@ public final class RotationDialView: UIView {
         switch g.state {
         case .began: startAngle = angle; haptic.prepare()
         case .changed:
-            var a = min(max(startAngle - t * sensitivity, -range), range)
+            var a = wrapped(startAngle - t * sensitivity)   // full 360° — wraps at a turn
             if abs(a) < range * 0.03 {          // snap to 0
                 a = 0
                 if !wasSnapped { haptic.selectionChanged(); wasSnapped = true }
