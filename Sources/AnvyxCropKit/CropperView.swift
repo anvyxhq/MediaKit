@@ -147,7 +147,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     /// export. Rebuilt whenever ``workingImage`` changes.
     private var previewBase: UIImage
     /// Longest edge (in pixels) of the interactive preview.
-    private let maxPreviewDimension: CGFloat = 1600
+    private let maxPreviewDimension: CGFloat = 1024
 
     /// Live color adjustments applied to the preview and the output.
     public var adjustments: ImageAdjustments = .none { didSet { refreshDisplay() } }
@@ -179,7 +179,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     public init(image: UIImage, configuration: CropConfiguration = .init()) {
         let normalized = ImageCropper.normalizedUp(image)
         self.workingImage = normalized
-        self.previewBase = CropperView.downscaled(normalized, maxDimension: 1600)
+        self.previewBase = CropperView.downscaled(normalized, maxDimension: 1024)
         self.displayImage = self.previewBase
         self.configuration = configuration
         self.overlay = CropOverlayView(maskStyle: configuration.maskStyle)
@@ -468,8 +468,13 @@ public final class CropperView: UIView, UIScrollViewDelegate {
 
     private func apply(document doc: CropDocument) {
         isBatchUpdating = true
-        workingImage = doc.workingImage
-        rebuildPreviewBase()
+        // Only re-downscale when the base image actually changed (rotate/flip/crop);
+        // undoing an adjustment/filter/film change leaves workingImage identical, so
+        // rebuilding the preview base every time was the bulk of undo/redo latency.
+        if doc.workingImage !== workingImage {
+            workingImage = doc.workingImage
+            rebuildPreviewBase()
+        }
         adjustments = doc.adjustments
         colorFilter = doc.colorFilter
         filterIntensity = doc.filterIntensity

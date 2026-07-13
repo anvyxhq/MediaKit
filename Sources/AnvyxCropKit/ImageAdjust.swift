@@ -8,6 +8,7 @@
 import UIKit
 import CoreImage
 import CoreImage.CIFilterBuiltins
+import Metal
 
 /// Live color adjustments: brightness / contrast / saturation / exposure, plus
 /// white balance (temperature / tint) and vibrance.
@@ -65,7 +66,14 @@ public enum ColorFilter: String, CaseIterable, Equatable, Sendable {
 }
 
 enum CropCIContext {
-    static let shared = CIContext(options: nil)
+    /// GPU-backed when a Metal device is available (much faster live filtering
+    /// than the default CPU context), falling back to the default otherwise.
+    static let shared: CIContext = {
+        if let device = MTLCreateSystemDefaultDevice() {
+            return CIContext(mtlDevice: device)
+        }
+        return CIContext(options: nil)
+    }()
 }
 
 public extension ImageCropper {
