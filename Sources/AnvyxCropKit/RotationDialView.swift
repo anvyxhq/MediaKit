@@ -78,20 +78,21 @@ public final class RotationDialView: UIView {
         ticks.lineWidth = 1
         ticks.stroke()
 
-        // Center indicator + degrees.
-        UIColor.systemYellow.setStroke()
-        let indicator = UIBezierPath()
-        indicator.move(to: CGPoint(x: mid, y: bounds.minY))
-        indicator.addLine(to: CGPoint(x: mid, y: bounds.maxY))
-        indicator.lineWidth = 2
-        indicator.stroke()
-
+        // Degrees label sits above the yellow indicator.
         let degrees = Int((angle * 180 / .pi).rounded())
         let text = "\(degrees)°" as NSString
         let attrs: [NSAttributedString.Key: Any] = [
             .foregroundColor: UIColor.white, .font: UIFont.systemFont(ofSize: 12, weight: .semibold),
         ]
         let size = text.size(withAttributes: attrs)
-        text.draw(at: CGPoint(x: mid - size.width / 2, y: bounds.maxY - size.height), withAttributes: attrs)
+        text.draw(at: CGPoint(x: mid - size.width / 2, y: bounds.minY), withAttributes: attrs)
+
+        // Center indicator — starts just below the label so the number sits on top.
+        UIColor.systemYellow.setStroke()
+        let indicator = UIBezierPath()
+        indicator.move(to: CGPoint(x: mid, y: bounds.minY + size.height + 2))
+        indicator.addLine(to: CGPoint(x: mid, y: bounds.maxY))
+        indicator.lineWidth = 2
+        indicator.stroke()
     }
 }

@@ -212,6 +212,10 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     public override func layoutSubviews() {
         super.layoutSubviews()
         guard bounds.width > 0, bounds.height > 0 else { return }
+        // Capture the image frame before relayout so we can keep the crop box
+        // proportional if the available area changed (e.g. the adjust panel
+        // toggling resizes the cropper).
+        let oldImageFrame = imageFrameInView
         overlay.frame = bounds
         // Setting a frame while a rotation transform is active is undefined and
         // shifts the view off-center — lay it out untransformed, then re-rotate.
@@ -233,6 +237,23 @@ public final class CropperView: UIView, UIScrollViewDelegate {
             cropBox = defaultCropBox()
             overlay.cropBox = cropBox
             didInitialLayout = true
+        } else {
+            let newImageFrame = imageFrameInView
+            // Re-map the crop box proportionally when the image frame changed, so
+            // switching tools / toggling panels doesn't shift or resize the selection.
+            if oldImageFrame.width > 1, oldImageFrame.height > 1,
+               newImageFrame.width > 1, newImageFrame.height > 1,
+               newImageFrame != oldImageFrame {
+                let nx = (cropBox.minX - oldImageFrame.minX) / oldImageFrame.width
+                let ny = (cropBox.minY - oldImageFrame.minY) / oldImageFrame.height
+                let nw = cropBox.width / oldImageFrame.width
+                let nh = cropBox.height / oldImageFrame.height
+                cropBox = CGRect(x: newImageFrame.minX + nx * newImageFrame.width,
+                                 y: newImageFrame.minY + ny * newImageFrame.height,
+                                 width: nw * newImageFrame.width,
+                                 height: nh * newImageFrame.height)
+                overlay.cropBox = cropBox
+            }
         }
     }
 
