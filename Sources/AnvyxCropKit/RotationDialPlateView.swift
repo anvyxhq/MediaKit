@@ -11,7 +11,8 @@ import UIKit
 /// Rotate the plate with a finger; a fixed top pointer marks the current angle.
 public final class RotationDialPlateView: UIView {
 
-    public var range: CGFloat = .pi / 4
+    /// Maximum deflection each way, in radians (default ±180° — free rotation).
+    public var range: CGFloat = .pi
     public var onChange: ((CGFloat) -> Void)?
     public private(set) var angle: CGFloat = 0 { didSet { setNeedsDisplay() } }
 

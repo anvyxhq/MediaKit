@@ -7,12 +7,12 @@
 
 import UIKit
 
-/// A horizontal fine-rotation dial (±`range`). Drag to change the angle; it
+/// A horizontal rotation dial (±`range`). Drag to change the angle; it
 /// snaps to 0 with haptic feedback. Wire ``onChange`` to `CropperView.rotationAngle`.
 public final class RotationDialView: UIView {
 
-    /// Maximum deflection each way, in radians (default ±45°).
-    public var range: CGFloat = .pi / 4
+    /// Maximum deflection each way, in radians (default ±180° — free rotation).
+    public var range: CGFloat = .pi
     public var onChange: ((CGFloat) -> Void)?
 
     public private(set) var angle: CGFloat = 0 {
