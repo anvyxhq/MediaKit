@@ -192,6 +192,51 @@ public final class CameraModel {
         }
     }
 
+    // MARK: - Advanced capture (best-effort; no-ops when unsupported/no device)
+
+    /// Enable **Cinematic Video** capture with a depth-of-field look (iOS 26).
+    /// - Parameter simulatedAperture: smaller = shallower depth of field.
+    @available(iOS 26, *)
+    public func enableCinematicVideo(simulatedAperture: Float? = nil) {
+        queue.async { [self] in
+            guard let videoInput, videoInput.device.activeFormat.isCinematicVideoCaptureSupported else { return }
+            session.beginConfiguration()
+            defer { session.commitConfiguration() }
+            videoInput.isCinematicVideoCaptureEnabled = true
+            if let simulatedAperture { videoInput.simulatedAperture = simulatedAperture }
+        }
+    }
+
+    /// Enable **Apple ProRAW** capture on supported devices.
+    public func setProRAWEnabled(_ enabled: Bool) {
+        queue.async { [self] in
+            guard photoOutput.isAppleProRAWSupported else { return }
+            session.beginConfiguration()
+            photoOutput.isAppleProRAWEnabled = enabled
+            session.commitConfiguration()
+        }
+    }
+
+    /// Enable **Constant Color** capture (consistent color under varied light, iOS 18).
+    @available(iOS 18, *)
+    public func setConstantColorEnabled(_ enabled: Bool) {
+        queue.async { [self] in
+            guard photoOutput.isConstantColorSupported else { return }
+            session.beginConfiguration()
+            photoOutput.isConstantColorEnabled = enabled
+            session.commitConfiguration()
+        }
+    }
+
+    /// Set the preferred video stabilization mode on the capture connection.
+    public func setVideoStabilization(_ mode: AVCaptureVideoStabilizationMode) {
+        queue.async { [self] in
+            guard let connection = photoOutput.connection(with: .video),
+                  connection.isVideoStabilizationSupported else { return }
+            connection.preferredVideoStabilizationMode = mode
+        }
+    }
+
     public func start() {
         queue.async { [self] in
             guard !session.isRunning else { return }
