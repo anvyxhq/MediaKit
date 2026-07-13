@@ -151,6 +151,8 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     public var filterIntensity: CGFloat = 1 { didSet { refreshDisplay() } }
     /// Instagram-style film preset applied to the preview and the output (`nil` = none).
     public var filmPreset: FilmPreset? { didSet { refreshDisplay() } }
+    /// Film preset strength in `0…1`.
+    public var filmIntensity: CGFloat = 1 { didSet { refreshDisplay() } }
 
     public var rotationAngle: CGFloat = 0 {
         didSet { rotationContainer.transform = CGAffineTransform(rotationAngle: rotationAngle); onChange?() }
@@ -384,7 +386,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     private func refreshDisplay() {
         displayImage = ImageCropper.process(workingImage, adjustments: adjustments,
                                             filter: colorFilter, filterIntensity: filterIntensity,
-                                            film: filmPreset)
+                                            film: filmPreset, filmIntensity: filmIntensity)
         imageView.image = displayImage
         onChange?()
     }
@@ -400,6 +402,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         CropDocument(workingImage: workingImage, crop: cropState(),
                      adjustments: adjustments, colorFilter: colorFilter,
                      filterIntensity: filterIntensity, filmPreset: filmPreset,
+                     filmIntensity: filmIntensity,
                      aspectRatio: configuration.aspectRatio, shape: configuration.shape)
     }
 
@@ -425,6 +428,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         colorFilter = doc.colorFilter
         filterIntensity = doc.filterIntensity
         filmPreset = doc.filmPreset
+        filmIntensity = doc.filmIntensity
         configuration.aspectRatio = doc.aspectRatio
         configuration.shape = doc.shape
         overlay.shape = doc.shape
@@ -438,6 +442,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     // Undo-aware setters (used by the SwiftUI controller / editor).
     public func setColorFilter(_ filter: ColorFilter) { recordUndo(); colorFilter = filter }
     public func setFilmPreset(_ preset: FilmPreset?) { recordUndo(); filmPreset = preset }
+    public func setFilmIntensity(_ value: CGFloat) { filmIntensity = value }
     /// Call once when a slider drag begins so the whole drag is one undo step.
     public func beginAdjustment() { recordUndo() }
     public func setFilterIntensity(_ value: CGFloat) { filterIntensity = value }

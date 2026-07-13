@@ -62,6 +62,11 @@ public final class CropController {
         get { cropperView.filmPreset }
         set { cropperView.setFilmPreset(newValue) }
     }
+    /// Film preset strength in `0…1`.
+    public var filmIntensity: CGFloat {
+        get { cropperView.filmIntensity }
+        set { cropperView.setFilmIntensity(newValue) }
+    }
     /// Call at the start of a slider drag so the whole drag is one undo step.
     public func beginAdjustment() { cropperView.beginAdjustment() }
 }

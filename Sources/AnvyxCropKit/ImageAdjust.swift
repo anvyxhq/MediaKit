@@ -126,18 +126,20 @@ public extension ImageCropper {
         return render(result, like: image, extent: input.extent)
     }
 
-    /// Apply an Instagram-style ``FilmPreset`` (with its color overlays).
-    static func film(_ image: UIImage, _ preset: FilmPreset?) -> UIImage {
-        guard let preset, let cg = image.cgImage else { return image }
-        return UIImage(cgImage: preset.apply(to: cg), scale: image.scale, orientation: image.imageOrientation)
+    /// Apply an Instagram-style ``FilmPreset`` at `intensity` in `0…1` (with its color overlays).
+    static func film(_ image: UIImage, _ preset: FilmPreset?, intensity: CGFloat = 1) -> UIImage {
+        guard let preset, intensity > 0, let cg = image.cgImage else { return image }
+        let out = preset.apply(to: cg, intensity: Float(intensity))
+        return UIImage(cgImage: out, scale: image.scale, orientation: image.imageOrientation)
     }
 
     /// Combined adjustments + filter + film preset in one render.
     static func process(_ image: UIImage, adjustments: ImageAdjustments,
                         filter: ColorFilter, filterIntensity: CGFloat = 1,
-                        film preset: FilmPreset? = nil) -> UIImage {
+                        film preset: FilmPreset? = nil, filmIntensity: CGFloat = 1) -> UIImage {
         guard !adjustments.isIdentity || filter != .none || preset != nil else { return image }
-        return film(filtered(adjusted(image, adjustments), filter, intensity: filterIntensity), preset)
+        return film(filtered(adjusted(image, adjustments), filter, intensity: filterIntensity),
+                    preset, intensity: filmIntensity)
     }
 
     private static func render(_ ciImage: CIImage, like image: UIImage, extent: CGRect) -> UIImage {

@@ -91,4 +91,29 @@ final class FilmPresetTests: XCTestCase {
     func testRecipeScaledToZeroIsNeutral() {
         XCTAssertTrue(FilmPreset.nashville.recipe.scaled(by: 0).isNeutral)
     }
+
+    func testPresetIntensityZeroIsPassthrough() {
+        // With overlays scaled too, intensity 0 must be a full no-op even for
+        // overlay-carrying presets.
+        let src = image()
+        XCTAssertTrue(FilmPreset.walden.apply(to: src, intensity: 0) === src)
+    }
+
+    func testPresetIntensityHalfDiffersFromFull() {
+        let src = image()
+        let context = CIContext(options: nil)
+        let full = firstPixel(FilmPreset.walden.apply(to: src, intensity: 1, context: context))
+        let half = firstPixel(FilmPreset.walden.apply(to: src, intensity: 0.5, context: context))
+        XCTAssertNotEqual(half, firstPixel(src))
+        XCTAssertNotEqual(half, full)
+    }
+
+    func testProcessFilmIntensityZeroSkipsPreset() {
+        let src = UIGraphicsImageRenderer(size: CGSize(width: 20, height: 20)).image { ctx in
+            UIColor.orange.setFill(); ctx.fill(CGRect(x: 0, y: 0, width: 20, height: 20))
+        }
+        let out = ImageCropper.process(src, adjustments: .none, filter: .none,
+                                       film: .clarendon, filmIntensity: 0)
+        XCTAssertTrue(out === src)
+    }
 }

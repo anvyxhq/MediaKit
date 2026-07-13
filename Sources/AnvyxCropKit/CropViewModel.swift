@@ -33,17 +33,19 @@ public struct CropDocument: Sendable {
     public var colorFilter: ColorFilter
     public var filterIntensity: CGFloat
     public var filmPreset: FilmPreset?
+    public var filmIntensity: CGFloat
     public var aspectRatio: CropAspectRatio
     public var shape: CropShape
 
     public init(workingImage: UIImage, crop: CropState = .init(),
                 adjustments: ImageAdjustments = .none, colorFilter: ColorFilter = .none,
                 filterIntensity: CGFloat = 1, filmPreset: FilmPreset? = nil,
-                aspectRatio: CropAspectRatio = .free,
+                filmIntensity: CGFloat = 1, aspectRatio: CropAspectRatio = .free,
                 shape: CropShape = .rectangle) {
         self.workingImage = workingImage; self.crop = crop
         self.adjustments = adjustments; self.colorFilter = colorFilter
         self.filterIntensity = filterIntensity; self.filmPreset = filmPreset
+        self.filmIntensity = filmIntensity
         self.aspectRatio = aspectRatio; self.shape = shape
     }
 }

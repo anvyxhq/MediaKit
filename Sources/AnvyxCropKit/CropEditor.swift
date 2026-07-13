@@ -24,6 +24,7 @@ public struct CropEditor: View {
     @State private var tint: Float = 0
     @State private var vibrance: Float = 0
     @State private var intensity: CGFloat = 1
+    @State private var filmStrength: CGFloat = 1
 
     private let configuration: CropConfiguration
     private let onDone: (UIImage?) -> Void
@@ -90,6 +91,14 @@ public struct CropEditor: View {
                 }
                 .onChange(of: intensity) { _, v in controller.filterIntensity = v }
                 .accessibilityLabel("Filter strength")
+            }
+            HStack {
+                Text("Film").frame(width: 90, alignment: .leading).font(.caption)
+                Slider(value: $filmStrength, in: 0...1) { editing in
+                    if editing { controller.beginAdjustment() } else { controller.filmIntensity = filmStrength }
+                }
+                .onChange(of: filmStrength) { _, v in controller.filmIntensity = v }
+                .accessibilityLabel("Film strength")
             }
         }
         .padding(.horizontal, 20).padding(.vertical, 8)
@@ -158,7 +167,7 @@ public struct CropEditor: View {
     }
 
     private func reset() {
-        brightness = 0; contrast = 1; saturation = 1; intensity = 1
+        brightness = 0; contrast = 1; saturation = 1; intensity = 1; filmStrength = 1
         temperature = 6500; tint = 0; vibrance = 0
         controller.filmPreset = nil
         controller.reset()

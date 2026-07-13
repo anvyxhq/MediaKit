@@ -314,9 +314,14 @@ public enum FilmPreset: String, CaseIterable, Sendable {
         recipe.apply(to: image, overlays: overlays, context: context)
     }
 
-    /// Apply this preset at `intensity` (`0…1`); the base recipe is dialed, overlays
-    /// are included at full strength.
+    /// Apply this preset at `intensity` (`0…1`) — dials the whole look, base recipe
+    /// and overlay opacity together (`0` = no effect, `1` = full).
     public func apply(to image: CGImage, intensity: Float, context: CIContext = CIContext(options: nil)) -> CGImage {
-        recipe.apply(to: image, intensity: intensity, overlays: overlays, context: context)
+        let clamped = min(max(intensity, 0), 1)
+        guard clamped > 0 else { return image }
+        let dimmed = overlays.map {
+            FilterOverlay(fill: $0.fill, blend: $0.blend, opacity: $0.opacity * CGFloat(clamped))
+        }
+        return recipe.apply(to: image, intensity: clamped, overlays: dimmed, context: context)
     }
 }
