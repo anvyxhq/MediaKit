@@ -129,7 +129,7 @@ public extension ImageCropper {
     /// Apply an Instagram-style ``FilmPreset`` at `intensity` in `0…1` (with its color overlays).
     static func film(_ image: UIImage, _ preset: FilmPreset?, intensity: CGFloat = 1) -> UIImage {
         guard let preset, intensity > 0, let cg = image.cgImage else { return image }
-        let out = preset.apply(to: cg, intensity: Float(intensity))
+        let out = preset.apply(to: cg, intensity: Float(intensity), context: CropCIContext.shared)
         return UIImage(cgImage: out, scale: image.scale, orientation: image.imageOrientation)
     }
 

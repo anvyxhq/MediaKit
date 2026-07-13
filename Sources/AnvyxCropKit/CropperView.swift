@@ -142,6 +142,12 @@ public final class CropperView: UIView, UIScrollViewDelegate {
 
     private var workingImage: UIImage
     private var displayImage: UIImage
+    /// A downscaled copy of ``workingImage`` used to render the live preview so
+    /// dragging sliders stays smooth; the full-resolution render only happens on
+    /// export. Rebuilt whenever ``workingImage`` changes.
+    private var previewBase: UIImage
+    /// Longest edge (in pixels) of the interactive preview.
+    private let maxPreviewDimension: CGFloat = 1600
 
     /// Live color adjustments applied to the preview and the output.
     public var adjustments: ImageAdjustments = .none { didSet { refreshDisplay() } }
@@ -173,7 +179,8 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     public init(image: UIImage, configuration: CropConfiguration = .init()) {
         let normalized = ImageCropper.normalizedUp(image)
         self.workingImage = normalized
-        self.displayImage = normalized
+        self.previewBase = CropperView.downscaled(normalized, maxDimension: 1600)
+        self.displayImage = self.previewBase
         self.configuration = configuration
         self.overlay = CropOverlayView(maskStyle: configuration.maskStyle)
         super.init(frame: .zero)
@@ -206,7 +213,11 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         super.layoutSubviews()
         guard bounds.width > 0, bounds.height > 0 else { return }
         overlay.frame = bounds
+        // Setting a frame while a rotation transform is active is undefined and
+        // shifts the view off-center — lay it out untransformed, then re-rotate.
+        rotationContainer.transform = .identity
         rotationContainer.frame = bounds
+        rotationContainer.transform = CGAffineTransform(rotationAngle: rotationAngle)
 
         let area = bounds.insetBy(dx: configuration.padding, dy: configuration.padding)
         scrollView.frame = area
@@ -370,6 +381,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         recordUndo()
         guard let rotated = ImageCropper.rotated90(workingImage, quarterTurns: 1) else { return }
         workingImage = rotated
+        rebuildPreviewBase()
         didInitialLayout = false
         refreshDisplay()
         setNeedsLayout(); layoutIfNeeded()
@@ -380,15 +392,42 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         recordUndo()
         guard let out = ImageCropper.flipped(workingImage, horizontally: horizontally, vertically: !horizontally) else { return }
         workingImage = out
+        rebuildPreviewBase()
         refreshDisplay()
     }
 
     private func refreshDisplay() {
-        displayImage = ImageCropper.process(workingImage, adjustments: adjustments,
+        // Render the small preview base — fast enough to keep slider drags smooth.
+        displayImage = ImageCropper.process(previewBase, adjustments: adjustments,
                                             filter: colorFilter, filterIntensity: filterIntensity,
                                             film: filmPreset, filmIntensity: filmIntensity)
         imageView.image = displayImage
         onChange?()
+    }
+
+    /// Full-resolution processed image (adjustments + filter + film), used only on export.
+    private func processedFullResolution() -> UIImage {
+        ImageCropper.process(workingImage, adjustments: adjustments,
+                             filter: colorFilter, filterIntensity: filterIntensity,
+                             film: filmPreset, filmIntensity: filmIntensity)
+    }
+
+    private func rebuildPreviewBase() {
+        previewBase = CropperView.downscaled(workingImage, maxDimension: maxPreviewDimension)
+    }
+
+    /// Downscale so the longest edge is at most `maxDimension` px (never upscales).
+    private static func downscaled(_ image: UIImage, maxDimension: CGFloat) -> UIImage {
+        let pixelWidth = CGFloat(image.cgImage?.width ?? Int(image.size.width))
+        let pixelHeight = CGFloat(image.cgImage?.height ?? Int(image.size.height))
+        let longest = max(pixelWidth, pixelHeight)
+        guard longest > maxDimension else { return image }
+        let scale = maxDimension / longest
+        let size = CGSize(width: pixelWidth * scale, height: pixelHeight * scale)
+        let format = UIGraphicsImageRendererFormat(); format.scale = 1; format.opaque = false
+        return UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            image.draw(in: CGRect(origin: .zero, size: size))
+        }
     }
 
     // MARK: - Undo / redo
@@ -424,6 +463,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
 
     private func apply(document doc: CropDocument) {
         workingImage = doc.workingImage
+        rebuildPreviewBase()
         adjustments = doc.adjustments
         colorFilter = doc.colorFilter
         filterIntensity = doc.filterIntensity
@@ -466,21 +506,23 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     /// Crop inputs gathered from the (main-thread) view state — so the actual
     /// render can run either inline or off-main with identical parameters.
     private func cropParameters() -> (source: UIImage, rectPx: CGRect?, info: CropInfo?)? {
+        // Render at full resolution here (the live preview uses a downscaled base).
+        let source = processedFullResolution()
         if rotationAngle == 0 {
             let image = imageFrameInView
             guard image.width > 0 else { return nil }
-            let pxPerPoint = CGFloat(displayImage.cgImage?.width ?? 1) / image.width
+            let pxPerPoint = CGFloat(source.cgImage?.width ?? 1) / image.width
             let rectPx = CGRect(
                 x: (cropBox.minX - image.minX) * pxPerPoint,
                 y: (cropBox.minY - image.minY) * pxPerPoint,
                 width: cropBox.width * pxPerPoint,
                 height: cropBox.height * pxPerPoint)
-            return (displayImage, rectPx, nil)
+            return (source, rectPx, nil)
         } else {
             let zoom = scrollView.zoomScale
             let fit = CGSize(width: scrollView.contentSize.width / zoom, height: scrollView.contentSize.height / zoom)
             let info = CropInfo(rotation: rotationAngle, scale: zoom, cropSize: cropBox.size, imageViewSize: fit)
-            return (displayImage, nil, info)
+            return (source, nil, info)
         }
     }
 
