@@ -192,6 +192,23 @@ public final class CameraModel {
         }
     }
 
+    /// Live camera frames as an `AsyncStream`, keeping only the newest frame so
+    /// analysis stays real-time (older frames are dropped rather than queued).
+    /// Consume with `for await frame in camera.videoFrames()`; the stream stops
+    /// delivering when the consuming task is cancelled.
+    public func videoFrames() -> AsyncStream<CameraFrame> {
+        AsyncStream(CameraFrame.self, bufferingPolicy: .bufferingNewest(1)) { continuation in
+            frameForwarder.onFrame = { continuation.yield(CameraFrame(sampleBuffer: $0)) }
+            continuation.onTermination = { [weak self] _ in
+                guard let self else { return }
+                Task { @MainActor in self.stopVideoFrames() }
+            }
+            queue.async { [self] in
+                videoDataOutput.setSampleBufferDelegate(frameForwarder, queue: frameQueue)
+            }
+        }
+    }
+
     // MARK: - Hardware Camera Control (iPhone 16+)
 
     /// Add the system zoom and exposure-bias sliders driven by the hardware
@@ -432,6 +449,16 @@ public final class CameraModel {
             position: position
         ).devices.first
     }
+}
+
+/// A single live camera frame. `CMSampleBuffer`/`CVPixelBuffer` aren't `Sendable`,
+/// but a frame is produced and consumed within one analysis hop, so this box is
+/// safe to move across the frame `AsyncStream`.
+public struct CameraFrame: @unchecked Sendable {
+    public let sampleBuffer: CMSampleBuffer
+    public init(sampleBuffer: CMSampleBuffer) { self.sampleBuffer = sampleBuffer }
+    /// The underlying pixel buffer, ready for a `VNImageRequestHandler`.
+    public var pixelBuffer: CVPixelBuffer? { CMSampleBufferGetImageBuffer(sampleBuffer) }
 }
 
 /// Forwards `AVCaptureVideoDataOutput` sample buffers to a `Sendable` handler.

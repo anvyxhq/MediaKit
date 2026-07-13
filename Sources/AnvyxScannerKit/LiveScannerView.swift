@@ -36,7 +36,8 @@ public struct LiveScannerView: View {
     public var body: some View {
         ZStack {
             CameraPreview(session: scanner.camera.session).ignoresSafeArea()
-            ScannerOverlay(quads: scanner.quads, textLines: scanner.textLines)
+            ScannerOverlay(quads: scanner.quads, textLines: scanner.textLines,
+                           contentAspect: scanner.frameAspect)
                 .ignoresSafeArea()
 
             VStack {

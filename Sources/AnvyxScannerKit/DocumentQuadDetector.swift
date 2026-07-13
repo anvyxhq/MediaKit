@@ -64,11 +64,13 @@ public struct DocumentQuadDetector: Sendable {
         return quads(from: request)
     }
 
-    /// Detect documents in a live camera frame.
+    /// Detect documents in a live camera frame, reusing a `VNSequenceRequestHandler`
+    /// across frames — smoother and cheaper than a fresh handler each frame.
     public func detect(in pixelBuffer: CVPixelBuffer,
-                       orientation: CGImagePropertyOrientation = .right) throws -> [DocumentQuad] {
+                       orientation: CGImagePropertyOrientation,
+                       using handler: VNSequenceRequestHandler) throws -> [DocumentQuad] {
         let request = makeRequest()
-        try VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:]).perform([request])
+        try handler.perform([request], on: pixelBuffer, orientation: orientation)
         return quads(from: request)
     }
 }

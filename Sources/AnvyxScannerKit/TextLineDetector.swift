@@ -56,11 +56,13 @@ public struct TextLineDetector: Sendable {
         return lines(from: request)
     }
 
-    /// Detect text lines in a live camera frame.
+    /// Detect text lines in a live camera frame, reusing a `VNSequenceRequestHandler`
+    /// across frames.
     public func detect(in pixelBuffer: CVPixelBuffer,
-                       orientation: CGImagePropertyOrientation = .right) throws -> [TextLine] {
+                       orientation: CGImagePropertyOrientation,
+                       using handler: VNSequenceRequestHandler) throws -> [TextLine] {
         let request = makeRequest()
-        try VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: orientation, options: [:]).perform([request])
+        try handler.perform([request], on: pixelBuffer, orientation: orientation)
         return lines(from: request)
     }
 }
