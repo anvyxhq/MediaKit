@@ -65,4 +65,14 @@ public struct TextLineDetector: Sendable {
         try handler.perform([request], on: pixelBuffer, orientation: orientation)
         return lines(from: request)
     }
+
+    /// Detect text lines in an already-oriented (usually downscaled) frame image,
+    /// reusing a `VNSequenceRequestHandler`.
+    public func detect(in image: CGImage,
+                       orientation: CGImagePropertyOrientation = .up,
+                       using handler: VNSequenceRequestHandler) throws -> [TextLine] {
+        let request = makeRequest()
+        try handler.perform([request], on: image, orientation: orientation)
+        return lines(from: request)
+    }
 }

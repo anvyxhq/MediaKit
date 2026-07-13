@@ -10,6 +10,8 @@ import AVFoundation
 import CoreImage
 import CoreVideo
 import Vision
+import Metal
+import QuartzCore
 import Observation
 import AnvyxCameraKit
 import AnvyxCropKit
@@ -46,16 +48,33 @@ public final class LiveScanner {
     private let documentDetector: DocumentQuadDetector
     private let textDetector: TextLineDetector
     private let orientation: CGImagePropertyOrientation
-    private let ciContext = CIContext(options: nil)
+    /// Minimum seconds between analyses — caps Vision to ~this rate to save CPU
+    /// (the camera runs faster; extra frames are skipped).
+    private let analysisInterval: CFTimeInterval
+    /// Frames are downscaled so their longest edge is at most this many pixels
+    /// before analysis — cheaper Vision + less memory; quads are normalized so
+    /// they still map back to the full preview.
+    private let maxAnalysisDimension: CGFloat
+    private let ciContext = LiveScanner.makeContext()
     private var scanTask: Task<Void, Never>?
 
     public init(mode: Mode = .document,
                 maximumDocuments: Int = 3,
-                orientation: CGImagePropertyOrientation = .right) {
+                orientation: CGImagePropertyOrientation = .right,
+                analysisFrameRate: Double = 12,
+                maxAnalysisDimension: CGFloat = 1024) {
         self.mode = mode
         self.orientation = orientation
+        self.analysisInterval = analysisFrameRate > 0 ? 1.0 / analysisFrameRate : 0
+        self.maxAnalysisDimension = maxAnalysisDimension
         self.documentDetector = DocumentQuadDetector(maximumDocuments: maximumDocuments)
         self.textDetector = TextLineDetector(recognitionLevel: .fast)
+    }
+
+    /// A Metal-backed context when available (fast, low-overhead), else the default.
+    nonisolated static func makeContext() -> CIContext {
+        if let device = MTLCreateSystemDefaultDevice() { return CIContext(mtlDevice: device) }
+        return CIContext(options: nil)
     }
 
     /// Configure + start the camera and begin live analysis.
@@ -80,61 +99,68 @@ public final class LiveScanner {
         let documentDetector = self.documentDetector
         let textDetector = self.textDetector
         let orientation = self.orientation
+        let interval = self.analysisInterval
+        let maxDimension = self.maxAnalysisDimension
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let stream = await self?.camera.videoFrames() else { return }
-            let handler = VNSequenceRequestHandler()   // reused across frames — smoother
-            let frameContext = CIContext(options: nil)
+            let handler = VNSequenceRequestHandler()   // reused across frames
+            let context = LiveScanner.makeContext()
             var smoother = QuadSmoother()
+            var lastAnalysis: CFTimeInterval = 0
+
             for await frame in stream {
                 if Task.isCancelled { break }
-                guard let pixelBuffer = frame.pixelBuffer else { continue }
+                let now = CACurrentMediaTime()
+                guard now - lastAnalysis >= interval else { continue }   // throttle → save CPU
+                guard let pixelBuffer = frame.pixelBuffer,
+                      let image = LiveScanner.analysisImage(from: pixelBuffer, orientation: orientation,
+                                                            maxDimension: maxDimension, context: context)
+                else { continue }
+                lastAnalysis = now
+                let aspect = CGFloat(image.width) / CGFloat(image.height)
                 let mode = await self?.mode ?? .document
-                let aspect = Self.orientedAspect(of: pixelBuffer, orientation: orientation)
+
                 switch mode {
                 case .document:
-                    let raw = (try? documentDetector.detect(in: pixelBuffer, orientation: orientation, using: handler)) ?? []
+                    let raw = (try? documentDetector.detect(in: image, using: handler)) ?? []
                     await self?.publish(quads: smoother.update(raw), textLines: [], aspect: aspect)
                 case .singleDocument:
                     var detected: [DocumentQuad] = []
-                    // Segmentation runs on a CGImage (already oriented) — converting
-                    // here also side-steps sending a shared pixel buffer into the
-                    // async request.
                     if #available(iOS 26, *) {
-                        let oriented = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
-                        if let cgImage = frameContext.createCGImage(oriented, from: oriented.extent),
-                           let quad = try? await DocumentEdgeDetector().detectQuad(in: cgImage) {
-                            detected = [quad]
-                        }
+                        if let quad = try? await DocumentEdgeDetector().detectQuad(in: image) { detected = [quad] }
                     } else {
-                        detected = Array(((try? documentDetector.detect(in: pixelBuffer, orientation: orientation, using: handler)) ?? []).prefix(1))
+                        detected = Array(((try? documentDetector.detect(in: image, using: handler)) ?? []).prefix(1))
                     }
                     await self?.publish(quads: smoother.update(detected), textLines: [], aspect: aspect)
                 case .text:
                     smoother.reset()
-                    let lines = (try? textDetector.detect(in: pixelBuffer, orientation: orientation, using: handler)) ?? []
+                    let lines = (try? textDetector.detect(in: image, using: handler)) ?? []
                     await self?.publish(quads: [], textLines: lines, aspect: aspect)
                 }
             }
         }
     }
 
-    private func publish(quads: [DocumentQuad], textLines: [TextLine], aspect: CGFloat) {
-        self.quads = quads
-        self.textLines = textLines
-        self.frameAspect = aspect
+    /// Build an oriented, downscaled `CGImage` for analysis from a camera frame.
+    nonisolated static func analysisImage(from pixelBuffer: CVPixelBuffer,
+                                          orientation: CGImagePropertyOrientation,
+                                          maxDimension: CGFloat,
+                                          context: CIContext) -> CGImage? {
+        var image = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
+        let longest = max(image.extent.width, image.extent.height)
+        if longest > maxDimension, longest > 0 {
+            let scale = maxDimension / longest
+            image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        }
+        return context.createCGImage(image, from: image.extent)
     }
 
-    /// The analyzed frame's aspect ratio (width/height) in display orientation.
-    nonisolated static func orientedAspect(of pixelBuffer: CVPixelBuffer, orientation: CGImagePropertyOrientation) -> CGFloat {
-        let width = CGFloat(CVPixelBufferGetWidth(pixelBuffer))
-        let height = CGFloat(CVPixelBufferGetHeight(pixelBuffer))
-        guard width > 0, height > 0 else { return 3.0 / 4.0 }
-        switch orientation {
-        case .right, .left, .rightMirrored, .leftMirrored:
-            return height / width   // sensor rotated 90° → swap
-        default:
-            return width / height
-        }
+    private func publish(quads: [DocumentQuad], textLines: [TextLine], aspect: CGFloat) {
+        frameAspect = aspect
+        // Skip redundant "nothing detected" updates to avoid needless re-renders.
+        if quads.isEmpty, textLines.isEmpty, self.quads.isEmpty, self.textLines.isEmpty { return }
+        self.quads = quads
+        self.textLines = textLines
     }
 
     /// Capture a full-resolution photo. In document mode this returns every

@@ -73,4 +73,14 @@ public struct DocumentQuadDetector: Sendable {
         try handler.perform([request], on: pixelBuffer, orientation: orientation)
         return quads(from: request)
     }
+
+    /// Detect documents in an already-oriented (usually downscaled) frame image,
+    /// reusing a `VNSequenceRequestHandler`.
+    public func detect(in image: CGImage,
+                       orientation: CGImagePropertyOrientation = .up,
+                       using handler: VNSequenceRequestHandler) throws -> [DocumentQuad] {
+        let request = makeRequest()
+        try handler.perform([request], on: image, orientation: orientation)
+        return quads(from: request)
+    }
 }

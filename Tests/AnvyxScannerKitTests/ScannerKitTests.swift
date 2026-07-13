@@ -70,4 +70,29 @@ final class ScannerKitTests: XCTestCase {
         let scanner = LiveScanner(mode: .singleDocument)
         XCTAssertEqual(scanner.mode, .singleDocument)
     }
+
+    private func pixelBuffer(width: Int, height: Int) -> CVPixelBuffer {
+        var buffer: CVPixelBuffer?
+        CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)
+        return buffer!
+    }
+
+    func testAnalysisImageDownscalesLargeFrame() {
+        let large = pixelBuffer(width: 4032, height: 3024)
+        let image = LiveScanner.analysisImage(from: large, orientation: .up,
+                                              maxDimension: 1024, context: LiveScanner.makeContext())
+        let cg = try? XCTUnwrap(image)
+        XCTAssertNotNil(cg)
+        XCTAssertLessThanOrEqual(max(cg!.width, cg!.height), 1024)
+        // Aspect ratio preserved (4032:3024 = 4:3).
+        XCTAssertEqual(CGFloat(cg!.width) / CGFloat(cg!.height), 4.0 / 3.0, accuracy: 0.02)
+    }
+
+    func testAnalysisImageKeepsSmallFrame() {
+        let small = pixelBuffer(width: 640, height: 480)
+        let image = LiveScanner.analysisImage(from: small, orientation: .up,
+                                              maxDimension: 1024, context: LiveScanner.makeContext())
+        XCTAssertEqual(image?.width, 640)
+        XCTAssertEqual(image?.height, 480)
+    }
 }
