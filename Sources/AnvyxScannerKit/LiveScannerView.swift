@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import AVFoundation
 import AnvyxCameraKit
 
 /// A ready-to-use live scanner screen: camera preview + live document-frame or
@@ -19,6 +20,7 @@ import AnvyxCameraKit
 /// ```
 public struct LiveScannerView: View {
     @State private var scanner: LiveScanner
+    @State private var previewLayer: AVCaptureVideoPreviewLayer?
     private let onCapture: ([UIImage]) -> Void
     private let onCancel: () -> Void
 
@@ -35,9 +37,12 @@ public struct LiveScannerView: View {
 
     public var body: some View {
         ZStack {
-            CameraPreview(session: scanner.camera.session).ignoresSafeArea()
+            CameraPreview(session: scanner.camera.session) { layer in
+                DispatchQueue.main.async { previewLayer = layer }
+            }
+            .ignoresSafeArea()
             ScannerOverlay(quads: scanner.quads, textLines: scanner.textLines,
-                           contentAspect: scanner.frameAspect)
+                           contentAspect: scanner.frameAspect, previewLayer: previewLayer)
                 .ignoresSafeArea()
 
             VStack {

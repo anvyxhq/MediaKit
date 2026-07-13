@@ -49,11 +49,16 @@ public struct DocumentQuadDetector: Sendable {
     }
 
     private func quads(from request: VNDetectRectanglesRequest) -> [DocumentQuad] {
+        scored(from: request).map(\.quad)
+    }
+
+    private func scored(from request: VNDetectRectanglesRequest) -> [ScoredQuad] {
         (request.results ?? [])
             .sorted { $0.confidence > $1.confidence }
             .map {
-                DocumentQuad(topLeft: $0.topLeft, topRight: $0.topRight,
-                             bottomLeft: $0.bottomLeft, bottomRight: $0.bottomRight)
+                ScoredQuad(quad: DocumentQuad(topLeft: $0.topLeft, topRight: $0.topRight,
+                                              bottomLeft: $0.bottomLeft, bottomRight: $0.bottomRight),
+                           confidence: $0.confidence)
             }
     }
 
@@ -82,5 +87,14 @@ public struct DocumentQuadDetector: Sendable {
         let request = makeRequest()
         try handler.perform([request], on: image, orientation: orientation)
         return quads(from: request)
+    }
+
+    /// Detect documents with their confidence — feed the result to a ``QuadTracker``.
+    public func detectScored(in image: CGImage,
+                             orientation: CGImagePropertyOrientation = .up,
+                             using handler: VNSequenceRequestHandler) throws -> [ScoredQuad] {
+        let request = makeRequest()
+        try handler.perform([request], on: image, orientation: orientation)
+        return scored(from: request)
     }
 }

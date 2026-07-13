@@ -105,7 +105,7 @@ public final class LiveScanner {
             guard let stream = await self?.camera.videoFrames() else { return }
             let handler = VNSequenceRequestHandler()   // reused across frames
             let context = LiveScanner.makeContext()
-            var smoother = QuadSmoother()
+            var tracker = QuadTracker()   // hysteresis + grace + smoothing (anti-flicker)
             var lastAnalysis: CFTimeInterval = 0
 
             for await frame in stream {
@@ -122,18 +122,20 @@ public final class LiveScanner {
 
                 switch mode {
                 case .document:
-                    let raw = (try? documentDetector.detect(in: image, using: handler)) ?? []
-                    await self?.publish(quads: smoother.update(raw), textLines: [], aspect: aspect)
+                    let scored = (try? documentDetector.detectScored(in: image, using: handler)) ?? []
+                    await self?.publish(quads: tracker.update(scored), textLines: [], aspect: aspect)
                 case .singleDocument:
-                    var detected: [DocumentQuad] = []
+                    var scored: [ScoredQuad] = []
                     if #available(iOS 26, *) {
-                        if let quad = try? await DocumentEdgeDetector().detectQuad(in: image) { detected = [quad] }
+                        if let quad = try? await DocumentEdgeDetector().detectQuad(in: image) {
+                            scored = [ScoredQuad(quad: quad, confidence: 1)]   // segmentation is decisive
+                        }
                     } else {
-                        detected = Array(((try? documentDetector.detect(in: image, using: handler)) ?? []).prefix(1))
+                        scored = Array(((try? documentDetector.detectScored(in: image, using: handler)) ?? []).prefix(1))
                     }
-                    await self?.publish(quads: smoother.update(detected), textLines: [], aspect: aspect)
+                    await self?.publish(quads: tracker.update(scored), textLines: [], aspect: aspect)
                 case .text:
-                    smoother.reset()
+                    tracker.reset()
                     let lines = (try? textDetector.detect(in: image, using: handler)) ?? []
                     await self?.publish(quads: [], textLines: lines, aspect: aspect)
                 }
