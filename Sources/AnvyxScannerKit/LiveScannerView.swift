@@ -45,11 +45,12 @@ public struct LiveScannerView: View {
                     button("xmark", "Cancel") { onCancel() }
                     Spacer()
                     Picker("Mode", selection: $scanner.mode) {
-                        Text("Document").tag(LiveScanner.Mode.document)
+                        Text("Multi").tag(LiveScanner.Mode.document)
+                        Text("Single").tag(LiveScanner.Mode.singleDocument)
                         Text("Text").tag(LiveScanner.Mode.text)
                     }
                     .pickerStyle(.segmented)
-                    .frame(maxWidth: 220)
+                    .frame(maxWidth: 260)
                     Spacer()
                     Color.clear.frame(width: 24, height: 24)   // balances the leading button
                 }

@@ -64,4 +64,10 @@ final class ScannerKitTests: XCTestCase {
         XCTAssertTrue(scanner.quads.isEmpty)
         XCTAssertTrue(scanner.textLines.isEmpty)
     }
+
+    @MainActor
+    func testSingleDocumentModeInit() {
+        let scanner = LiveScanner(mode: .singleDocument)
+        XCTAssertEqual(scanner.mode, .singleDocument)
+    }
 }

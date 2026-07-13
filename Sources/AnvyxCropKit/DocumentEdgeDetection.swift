@@ -8,6 +8,7 @@
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import CoreGraphics
+import CoreVideo
 import Vision
 
 /// The four corners of a detected document, **normalized** to `0...1` with a
@@ -62,7 +63,19 @@ public struct DocumentEdgeDetector: Sendable {
     public func detectQuad(in image: CGImage) async throws -> DocumentQuad? {
         let request = DetectDocumentSegmentationRequest()
         guard let document = try await request.perform(on: image) else { return nil }
-        return DocumentQuad(
+        return Self.quad(from: document)
+    }
+
+    /// Detect the document quad in a live camera frame (pixel buffer), or `nil`.
+    public func detectQuad(in pixelBuffer: sending CVPixelBuffer,
+                           orientation: CGImagePropertyOrientation = .up) async throws -> DocumentQuad? {
+        let request = DetectDocumentSegmentationRequest()
+        guard let document = try await request.perform(on: pixelBuffer, orientation: orientation) else { return nil }
+        return Self.quad(from: document)
+    }
+
+    private static func quad(from document: DetectedDocumentObservation) -> DocumentQuad {
+        DocumentQuad(
             topLeft: document.topLeft.cgPoint,
             topRight: document.topRight.cgPoint,
             bottomLeft: document.bottomLeft.cgPoint,

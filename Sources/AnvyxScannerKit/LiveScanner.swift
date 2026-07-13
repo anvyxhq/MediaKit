@@ -20,7 +20,15 @@ import AnvyxCropKit
 @MainActor
 @Observable
 public final class LiveScanner {
-    public enum Mode: Sendable, Equatable { case document, text }
+    public enum Mode: Sendable, Equatable {
+        /// Detect multiple rectangular documents at once (`VNDetectRectangles`).
+        case document
+        /// Detect a single document with the iOS 26 segmentation model — precise
+        /// edges on complex backgrounds (falls back to rectangles pre-iOS 26).
+        case singleDocument
+        /// Detect text lines for live underlining.
+        case text
+    }
 
     /// Live mode; can be switched while scanning — the analysis loop reads it each frame.
     public var mode: Mode
@@ -75,6 +83,7 @@ public final class LiveScanner {
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let stream = await self?.camera.videoFrames() else { return }
             let handler = VNSequenceRequestHandler()   // reused across frames — smoother
+            let frameContext = CIContext(options: nil)
             var smoother = QuadSmoother()
             for await frame in stream {
                 if Task.isCancelled { break }
@@ -84,8 +93,22 @@ public final class LiveScanner {
                 switch mode {
                 case .document:
                     let raw = (try? documentDetector.detect(in: pixelBuffer, orientation: orientation, using: handler)) ?? []
-                    let smoothed = smoother.update(raw)
-                    await self?.publish(quads: smoothed, textLines: [], aspect: aspect)
+                    await self?.publish(quads: smoother.update(raw), textLines: [], aspect: aspect)
+                case .singleDocument:
+                    var detected: [DocumentQuad] = []
+                    // Segmentation runs on a CGImage (already oriented) — converting
+                    // here also side-steps sending a shared pixel buffer into the
+                    // async request.
+                    if #available(iOS 26, *) {
+                        let oriented = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
+                        if let cgImage = frameContext.createCGImage(oriented, from: oriented.extent),
+                           let quad = try? await DocumentEdgeDetector().detectQuad(in: cgImage) {
+                            detected = [quad]
+                        }
+                    } else {
+                        detected = Array(((try? documentDetector.detect(in: pixelBuffer, orientation: orientation, using: handler)) ?? []).prefix(1))
+                    }
+                    await self?.publish(quads: smoother.update(detected), textLines: [], aspect: aspect)
                 case .text:
                     smoother.reset()
                     let lines = (try? textDetector.detect(in: pixelBuffer, orientation: orientation, using: handler)) ?? []
@@ -119,9 +142,17 @@ public final class LiveScanner {
     /// mode it returns the single captured photo. Empty if capture failed.
     public func capture() async -> [UIImage] {
         guard let photo = await camera.capturePhoto(), let cgImage = photo.cgImage else { return [] }
-        guard mode == .document else { return [photo] }
+        guard mode != .text else { return [photo] }
 
-        let quads = (try? documentDetector.detect(in: cgImage)) ?? []
+        // Single-document: prefer the iOS 26 segmentation model for a precise quad.
+        if mode == .singleDocument, #available(iOS 26, *),
+           let quad = try? await DocumentEdgeDetector().detectQuad(in: cgImage),
+           let corrected = DocumentPerspective.corrected(cgImage, quad: quad, context: ciContext) {
+            return [UIImage(cgImage: corrected, scale: photo.scale, orientation: .up)]
+        }
+
+        let detected = (try? documentDetector.detect(in: cgImage)) ?? []
+        let quads = mode == .singleDocument ? Array(detected.prefix(1)) : detected
         guard !quads.isEmpty else { return [photo] }
         return quads.compactMap { quad in
             DocumentPerspective.corrected(cgImage, quad: quad, context: ciContext)
