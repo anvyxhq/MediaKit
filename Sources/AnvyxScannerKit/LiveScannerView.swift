@@ -21,6 +21,7 @@ import AnvyxCameraKit
 public struct LiveScannerView: View {
     @State private var scanner: LiveScanner
     @State private var previewLayer: AVCaptureVideoPreviewLayer?
+    @Environment(\.scenePhase) private var scenePhase
     private let onCapture: ([UIImage]) -> Void
     private let onCancel: () -> Void
 
@@ -78,6 +79,13 @@ public struct LiveScannerView: View {
         .background(Color.black)
         .task { await scanner.start() }
         .onDisappear { scanner.stop() }
+        .onChange(of: scenePhase) { _, phase in
+            // Pause the camera + Vision when backgrounded; resume when active.
+            switch phase {
+            case .active: Task { await scanner.start() }
+            default: scanner.stop()
+            }
+        }
     }
 
     private func button(_ system: String, _ label: String, action: @escaping () -> Void) -> some View {

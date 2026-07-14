@@ -60,12 +60,12 @@ public struct QuadTracker: Sendable {
         // Carry forward existing tracks, matching each to the nearest detection.
         for var track in tracks {
             if let slot = unmatched.min(by: {
-                QuadSmoother.centroidDistance(detections[$0].quad, track.quad)
-                    < QuadSmoother.centroidDistance(detections[$1].quad, track.quad)
-            }), QuadSmoother.centroidDistance(detections[slot].quad, track.quad) <= matchDistance {
+                Self.centroidDistance(detections[$0].quad, track.quad)
+                    < Self.centroidDistance(detections[$1].quad, track.quad)
+            }), Self.centroidDistance(detections[slot].quad, track.quad) <= matchDistance {
                 let detection = detections[slot]
                 unmatched.removeAll { $0 == slot }
-                track.quad = QuadSmoother.blend(previous: track.quad, new: detection.quad, weight: smoothing)
+                track.quad = Self.blend(previous: track.quad, new: detection.quad, weight: smoothing)
                 track.confidence = detection.confidence
                 track.missing = 0
                 if detection.confidence >= enterConfidence { track.visible = true }
@@ -90,4 +90,28 @@ public struct QuadTracker: Sendable {
 
     /// Forget all tracks (call when scanning pauses or the mode changes).
     public mutating func reset() { tracks = [] }
+
+    // MARK: - Geometry
+
+    static func centroid(_ quad: DocumentQuad) -> CGPoint {
+        CGPoint(x: (quad.topLeft.x + quad.topRight.x + quad.bottomLeft.x + quad.bottomRight.x) / 4,
+                y: (quad.topLeft.y + quad.topRight.y + quad.bottomLeft.y + quad.bottomRight.y) / 4)
+    }
+
+    static func centroidDistance(_ a: DocumentQuad, _ b: DocumentQuad) -> CGFloat {
+        let p = centroid(a), q = centroid(b)
+        return hypot(p.x - q.x, p.y - q.y)
+    }
+
+    static func blend(previous: DocumentQuad, new: DocumentQuad, weight t: CGFloat) -> DocumentQuad {
+        let t = min(max(t, 0), 1)
+        func lerp(_ a: CGPoint, _ b: CGPoint) -> CGPoint {
+            CGPoint(x: a.x * t + b.x * (1 - t), y: a.y * t + b.y * (1 - t))
+        }
+        return DocumentQuad(
+            topLeft: lerp(previous.topLeft, new.topLeft),
+            topRight: lerp(previous.topRight, new.topRight),
+            bottomLeft: lerp(previous.bottomLeft, new.bottomLeft),
+            bottomRight: lerp(previous.bottomRight, new.bottomRight))
+    }
 }

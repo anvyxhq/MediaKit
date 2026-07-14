@@ -8,6 +8,7 @@
 import Vision
 import CoreGraphics
 import CoreVideo
+import CoreImage
 import AnvyxCropKit
 
 /// Detects one or more rectangular documents in a frame and returns their corner
@@ -25,17 +26,22 @@ public struct DocumentQuadDetector: Sendable {
     public var minimumAspectRatio: Float
     /// Smallest accepted size as a fraction of the image's shorter side.
     public var minimumSize: Float
+    /// Restrict detection to this normalized region (bottom-left origin) to cut
+    /// work and false positives; `nil` scans the whole frame.
+    public var regionOfInterest: CGRect?
 
     public init(
         maximumDocuments: Int = 3,
         minimumConfidence: VNConfidence = 0.6,
         minimumAspectRatio: Float = 0.3,
-        minimumSize: Float = 0.2
+        minimumSize: Float = 0.2,
+        regionOfInterest: CGRect? = nil
     ) {
         self.maximumDocuments = maximumDocuments
         self.minimumConfidence = minimumConfidence
         self.minimumAspectRatio = minimumAspectRatio
         self.minimumSize = minimumSize
+        self.regionOfInterest = regionOfInterest
     }
 
     private func makeRequest() -> VNDetectRectanglesRequest {
@@ -45,6 +51,7 @@ public struct DocumentQuadDetector: Sendable {
         request.minimumAspectRatio = minimumAspectRatio
         request.minimumSize = minimumSize
         request.quadratureTolerance = 25
+        if let regionOfInterest { request.regionOfInterest = regionOfInterest }
         return request
     }
 
@@ -91,6 +98,15 @@ public struct DocumentQuadDetector: Sendable {
 
     /// Detect documents with their confidence — feed the result to a ``QuadTracker``.
     public func detectScored(in image: CGImage,
+                             orientation: CGImagePropertyOrientation = .up,
+                             using handler: VNSequenceRequestHandler) throws -> [ScoredQuad] {
+        let request = makeRequest()
+        try handler.perform([request], on: image, orientation: orientation)
+        return scored(from: request)
+    }
+
+    /// Scored detection on a `CIImage` (avoids a per-frame `CGImage` allocation).
+    public func detectScored(in image: CIImage,
                              orientation: CGImagePropertyOrientation = .up,
                              using handler: VNSequenceRequestHandler) throws -> [ScoredQuad] {
         let request = makeRequest()

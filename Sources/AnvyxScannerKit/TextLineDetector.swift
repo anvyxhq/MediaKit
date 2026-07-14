@@ -8,6 +8,7 @@
 import Vision
 import CoreGraphics
 import CoreVideo
+import CoreImage
 
 /// A recognized line of text on the camera frame.
 public struct TextLine: Sendable, Equatable {
@@ -29,16 +30,33 @@ public struct TextLineDetector: Sendable {
     public var recognitionLevel: VNRequestTextRecognitionLevel
     /// Read the actual strings (slower). Off by default for smooth live underlining.
     public var readsText: Bool
+    /// Ignore text shorter than this fraction of the image height — skips tiny,
+    /// far-away text for speed.
+    public var minimumTextHeight: Float
+    /// Languages to consider (empty = Vision's default). Fewer = faster.
+    public var recognitionLanguages: [String]
+    /// Restrict recognition to this normalized region (bottom-left origin).
+    public var regionOfInterest: CGRect?
 
-    public init(recognitionLevel: VNRequestTextRecognitionLevel = .fast, readsText: Bool = false) {
+    public init(recognitionLevel: VNRequestTextRecognitionLevel = .fast,
+                readsText: Bool = false,
+                minimumTextHeight: Float = 0.02,
+                recognitionLanguages: [String] = [],
+                regionOfInterest: CGRect? = nil) {
         self.recognitionLevel = recognitionLevel
         self.readsText = readsText
+        self.minimumTextHeight = minimumTextHeight
+        self.recognitionLanguages = recognitionLanguages
+        self.regionOfInterest = regionOfInterest
     }
 
     private func makeRequest() -> VNRecognizeTextRequest {
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = recognitionLevel
         request.usesLanguageCorrection = readsText
+        request.minimumTextHeight = minimumTextHeight
+        if !recognitionLanguages.isEmpty { request.recognitionLanguages = recognitionLanguages }
+        if let regionOfInterest { request.regionOfInterest = regionOfInterest }
         return request
     }
 
@@ -69,6 +87,15 @@ public struct TextLineDetector: Sendable {
     /// Detect text lines in an already-oriented (usually downscaled) frame image,
     /// reusing a `VNSequenceRequestHandler`.
     public func detect(in image: CGImage,
+                       orientation: CGImagePropertyOrientation = .up,
+                       using handler: VNSequenceRequestHandler) throws -> [TextLine] {
+        let request = makeRequest()
+        try handler.perform([request], on: image, orientation: orientation)
+        return lines(from: request)
+    }
+
+    /// Detect text lines on a `CIImage` (avoids a per-frame `CGImage` allocation).
+    public func detect(in image: CIImage,
                        orientation: CGImagePropertyOrientation = .up,
                        using handler: VNSequenceRequestHandler) throws -> [TextLine] {
         let request = makeRequest()

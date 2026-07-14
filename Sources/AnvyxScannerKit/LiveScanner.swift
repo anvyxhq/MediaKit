@@ -13,6 +13,7 @@ import Vision
 import Metal
 import QuartzCore
 import Observation
+import os
 import AnvyxCameraKit
 import AnvyxCropKit
 
@@ -32,43 +33,44 @@ public final class LiveScanner {
         case text
     }
 
-    /// Live mode; can be switched while scanning — the analysis loop reads it each frame.
-    public var mode: Mode
+    /// A Sendable snapshot the background loop reads each frame without hopping
+    /// to the main actor.
+    struct Snapshot: Sendable {
+        var mode: Mode
+        var orientation: CGImagePropertyOrientation
+    }
 
-    /// Detected document quads (document mode), normalized bottom-left, smoothed.
+    /// Live mode; can be switched while scanning.
+    public var mode: Mode { didSet { let mode = mode; snapshot.withLock { $0.mode = mode } } }
+
+    /// Detected document quads (document mode), normalized bottom-left, stabilized.
     public private(set) var quads: [DocumentQuad] = []
     /// Detected text-line boxes (text mode), normalized bottom-left.
     public private(set) var textLines: [TextLine] = []
-    /// Aspect ratio (width / height) of the analyzed frame in display orientation —
-    /// used to map normalized detections onto an aspect-fill preview.
+    /// Aspect ratio (width / height) of the analyzed frame in display orientation.
     public private(set) var frameAspect: CGFloat = 3.0 / 4.0
 
     public let camera = CameraModel()
 
     private let documentDetector: DocumentQuadDetector
     private let textDetector: TextLineDetector
-    private let orientation: CGImagePropertyOrientation
-    /// Minimum seconds between analyses — caps Vision to ~this rate to save CPU
-    /// (the camera runs faster; extra frames are skipped).
     private let analysisInterval: CFTimeInterval
-    /// Frames are downscaled so their longest edge is at most this many pixels
-    /// before analysis — cheaper Vision + less memory; quads are normalized so
-    /// they still map back to the full preview.
     private let maxAnalysisDimension: CGFloat
     private let ciContext = LiveScanner.makeContext()
+    private let snapshot: OSAllocatedUnfairLock<Snapshot>
     private var scanTask: Task<Void, Never>?
+    private var orientationTask: Task<Void, Never>?
 
     public init(mode: Mode = .document,
                 maximumDocuments: Int = 3,
-                orientation: CGImagePropertyOrientation = .right,
                 analysisFrameRate: Double = 12,
                 maxAnalysisDimension: CGFloat = 1024) {
         self.mode = mode
-        self.orientation = orientation
         self.analysisInterval = analysisFrameRate > 0 ? 1.0 / analysisFrameRate : 0
         self.maxAnalysisDimension = maxAnalysisDimension
         self.documentDetector = DocumentQuadDetector(maximumDocuments: maximumDocuments)
         self.textDetector = TextLineDetector(recognitionLevel: .fast)
+        self.snapshot = OSAllocatedUnfairLock(initialState: Snapshot(mode: mode, orientation: .right))
     }
 
     /// A Metal-backed context when available (fast, low-overhead), else the default.
@@ -77,114 +79,179 @@ public final class LiveScanner {
         return CIContext(options: nil)
     }
 
-    /// Configure + start the camera and begin live analysis.
+    // MARK: - Lifecycle
+
+    /// Configure (once) + start the camera and begin live analysis. Cheap to call
+    /// again to resume after ``stop()``.
     public func start() async {
-        await camera.configure()
+        if !camera.isConfigured { await camera.configure() }
         camera.start()
+        observeOrientation()
         startScanning()
     }
 
-    /// Stop analysis and the camera.
+    /// Stop analysis and the camera (keeps configuration so ``start()`` resumes fast).
     public func stop() {
-        scanTask?.cancel()
-        scanTask = nil
+        scanTask?.cancel(); scanTask = nil
+        orientationTask?.cancel(); orientationTask = nil
+        UIDevice.current.endGeneratingDeviceOrientationNotifications()
         camera.stopVideoFrames()
         camera.stop()
     }
 
+    // MARK: - Orientation
+
+    private func observeOrientation() {
+        UIDevice.current.beginGeneratingDeviceOrientationNotifications()
+        updateOrientation()
+        orientationTask?.cancel()
+        orientationTask = Task { @MainActor [weak self] in
+            let notifications = NotificationCenter.default.notifications(named: UIDevice.orientationDidChangeNotification)
+            for await _ in notifications { self?.updateOrientation() }
+        }
+    }
+
+    private func updateOrientation() {
+        let device = UIDevice.current.orientation
+        guard device.isValidInterfaceOrientation else { return }   // ignore face up/down
+        let orientation = Self.visionOrientation(device: device, position: camera.position)
+        snapshot.withLock { $0.orientation = orientation }
+    }
+
+    /// Map a device orientation to the Vision image orientation for a camera.
+    nonisolated static func visionOrientation(device: UIDeviceOrientation,
+                                              position: AVCaptureDevice.Position) -> CGImagePropertyOrientation {
+        let back: CGImagePropertyOrientation
+        switch device {
+        case .portrait:            back = .right
+        case .portraitUpsideDown:  back = .left
+        case .landscapeLeft:       back = .up
+        case .landscapeRight:      back = .down
+        default:                   back = .right
+        }
+        // The front camera is mirrored horizontally relative to the back camera.
+        guard position == .front else { return back }
+        switch back {
+        case .right: return .leftMirrored
+        case .left:  return .rightMirrored
+        case .up:    return .upMirrored
+        case .down:  return .downMirrored
+        default:     return back
+        }
+    }
+
+    // MARK: - Analysis loop
+
     private func startScanning() {
         scanTask?.cancel()
-        // Value-type detectors are captured into the background task; only the
-        // Sendable results are published back to the main actor.
         let documentDetector = self.documentDetector
         let textDetector = self.textDetector
-        let orientation = self.orientation
-        let interval = self.analysisInterval
+        let baseInterval = self.analysisInterval
         let maxDimension = self.maxAnalysisDimension
+        let snapshot = self.snapshot
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let stream = await self?.camera.videoFrames() else { return }
-            let handler = VNSequenceRequestHandler()   // reused across frames
+            let handler = VNSequenceRequestHandler()
             let context = LiveScanner.makeContext()
-            var tracker = QuadTracker()   // hysteresis + grace + smoothing (anti-flicker)
+            var tracker = QuadTracker()
             var lastAnalysis: CFTimeInterval = 0
+            var idleFrames = 0
 
             for await frame in stream {
                 if Task.isCancelled { break }
+                // Adaptive throttle: analyze slower when nothing's been found lately.
+                let interval = idleFrames >= 15 ? baseInterval * 2 : baseInterval
                 let now = CACurrentMediaTime()
-                guard now - lastAnalysis >= interval else { continue }   // throttle → save CPU
-                guard let pixelBuffer = frame.pixelBuffer,
-                      let image = LiveScanner.analysisImage(from: pixelBuffer, orientation: orientation,
-                                                            maxDimension: maxDimension, context: context)
-                else { continue }
-                lastAnalysis = now
-                let aspect = CGFloat(image.width) / CGFloat(image.height)
-                let mode = await self?.mode ?? .document
+                guard now - lastAnalysis >= interval else { continue }
+                guard let pixelBuffer = frame.pixelBuffer else { continue }
 
-                switch mode {
+                let snap = snapshot.withLock { $0 }
+                let image = LiveScanner.analysisImage(from: pixelBuffer, orientation: snap.orientation,
+                                                      maxDimension: maxDimension)
+                lastAnalysis = now
+                let aspect = image.extent.height > 0 ? image.extent.width / image.extent.height : 3.0 / 4.0
+
+                var quads: [DocumentQuad] = []
+                var lines: [TextLine] = []
+                switch snap.mode {
                 case .document:
                     let scored = (try? documentDetector.detectScored(in: image, using: handler)) ?? []
-                    await self?.publish(quads: tracker.update(scored), textLines: [], aspect: aspect)
+                    quads = tracker.update(scored)
                 case .singleDocument:
                     var scored: [ScoredQuad] = []
                     if #available(iOS 26, *) {
-                        if let quad = try? await DocumentEdgeDetector().detectQuad(in: image) {
-                            scored = [ScoredQuad(quad: quad, confidence: 1)]   // segmentation is decisive
+                        if let cgImage = context.createCGImage(image, from: image.extent),
+                           let quad = try? await DocumentEdgeDetector().detectQuad(in: cgImage) {
+                            scored = [ScoredQuad(quad: quad, confidence: 1)]
                         }
                     } else {
                         scored = Array(((try? documentDetector.detectScored(in: image, using: handler)) ?? []).prefix(1))
                     }
-                    await self?.publish(quads: tracker.update(scored), textLines: [], aspect: aspect)
+                    quads = tracker.update(scored)
                 case .text:
                     tracker.reset()
-                    let lines = (try? textDetector.detect(in: image, using: handler)) ?? []
-                    await self?.publish(quads: [], textLines: lines, aspect: aspect)
+                    lines = (try? textDetector.detect(in: image, using: handler)) ?? []
                 }
+
+                idleFrames = (quads.isEmpty && lines.isEmpty) ? idleFrames + 1 : 0
+                await self?.publish(quads: quads, textLines: lines, aspect: aspect)
             }
         }
     }
 
-    /// Build an oriented, downscaled `CGImage` for analysis from a camera frame.
+    /// Build an oriented, downscaled `CIImage` for analysis (no `CGImage` allocation).
     nonisolated static func analysisImage(from pixelBuffer: CVPixelBuffer,
                                           orientation: CGImagePropertyOrientation,
-                                          maxDimension: CGFloat,
-                                          context: CIContext) -> CGImage? {
+                                          maxDimension: CGFloat) -> CIImage {
         var image = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
         let longest = max(image.extent.width, image.extent.height)
         if longest > maxDimension, longest > 0 {
             let scale = maxDimension / longest
             image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
         }
-        return context.createCGImage(image, from: image.extent)
+        return image
     }
 
     private func publish(quads: [DocumentQuad], textLines: [TextLine], aspect: CGFloat) {
         frameAspect = aspect
-        // Skip redundant "nothing detected" updates to avoid needless re-renders.
         if quads.isEmpty, textLines.isEmpty, self.quads.isEmpty, self.textLines.isEmpty { return }
         self.quads = quads
         self.textLines = textLines
     }
 
-    /// Capture a full-resolution photo. In document mode this returns every
-    /// detected document, perspective-corrected to an upright rectangle; in text
-    /// mode it returns the single captured photo. Empty if capture failed.
+    // MARK: - Capture
+
+    /// Capture a full-resolution photo. Document modes return every detected
+    /// document, perspective-corrected; text mode returns the photo. Detection
+    /// runs on a downscaled copy for speed, correction on the full-res image.
     public func capture() async -> [UIImage] {
-        guard let photo = await camera.capturePhoto(), let cgImage = photo.cgImage else { return [] }
+        guard let photo = await camera.capturePhoto(), let full = photo.cgImage else { return [] }
         guard mode != .text else { return [photo] }
 
-        // Single-document: prefer the iOS 26 segmentation model for a precise quad.
+        let small = downscaledForDetection(full)
+
         if mode == .singleDocument, #available(iOS 26, *),
-           let quad = try? await DocumentEdgeDetector().detectQuad(in: cgImage),
-           let corrected = DocumentPerspective.corrected(cgImage, quad: quad, context: ciContext) {
+           let quad = try? await DocumentEdgeDetector().detectQuad(in: small),
+           let corrected = DocumentPerspective.corrected(full, quad: quad, context: ciContext) {
             return [UIImage(cgImage: corrected, scale: photo.scale, orientation: .up)]
         }
 
-        let detected = (try? documentDetector.detect(in: cgImage)) ?? []
-        let quads = mode == .singleDocument ? Array(detected.prefix(1)) : detected
+        let handler = VNSequenceRequestHandler()
+        let detected = (try? documentDetector.detectScored(in: small, using: handler)) ?? []
+        let quads = (mode == .singleDocument ? Array(detected.prefix(1)) : detected).map(\.quad)
         guard !quads.isEmpty else { return [photo] }
         return quads.compactMap { quad in
-            DocumentPerspective.corrected(cgImage, quad: quad, context: ciContext)
+            DocumentPerspective.corrected(full, quad: quad, context: ciContext)
                 .map { UIImage(cgImage: $0, scale: photo.scale, orientation: .up) }
         }
+    }
+
+    private func downscaledForDetection(_ image: CGImage, maxDimension: CGFloat = 1536) -> CGImage {
+        var ciImage = CIImage(cgImage: image)
+        let longest = max(ciImage.extent.width, ciImage.extent.height)
+        guard longest > maxDimension else { return image }
+        let scale = maxDimension / longest
+        ciImage = ciImage.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+        return ciContext.createCGImage(ciImage, from: ciImage.extent) ?? image
     }
 }

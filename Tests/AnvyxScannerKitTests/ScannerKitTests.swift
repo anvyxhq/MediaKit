@@ -79,20 +79,24 @@ final class ScannerKitTests: XCTestCase {
 
     func testAnalysisImageDownscalesLargeFrame() {
         let large = pixelBuffer(width: 4032, height: 3024)
-        let image = LiveScanner.analysisImage(from: large, orientation: .up,
-                                              maxDimension: 1024, context: LiveScanner.makeContext())
-        let cg = try? XCTUnwrap(image)
-        XCTAssertNotNil(cg)
-        XCTAssertLessThanOrEqual(max(cg!.width, cg!.height), 1024)
-        // Aspect ratio preserved (4032:3024 = 4:3).
-        XCTAssertEqual(CGFloat(cg!.width) / CGFloat(cg!.height), 4.0 / 3.0, accuracy: 0.02)
+        let image = LiveScanner.analysisImage(from: large, orientation: .up, maxDimension: 1024)
+        XCTAssertLessThanOrEqual(max(image.extent.width, image.extent.height), 1024)
+        XCTAssertEqual(image.extent.width / image.extent.height, 4.0 / 3.0, accuracy: 0.02)
     }
 
     func testAnalysisImageKeepsSmallFrame() {
         let small = pixelBuffer(width: 640, height: 480)
-        let image = LiveScanner.analysisImage(from: small, orientation: .up,
-                                              maxDimension: 1024, context: LiveScanner.makeContext())
-        XCTAssertEqual(image?.width, 640)
-        XCTAssertEqual(image?.height, 480)
+        let image = LiveScanner.analysisImage(from: small, orientation: .up, maxDimension: 1024)
+        XCTAssertEqual(image.extent.width, 640)
+        XCTAssertEqual(image.extent.height, 480)
+    }
+
+    func testVisionOrientationMapping() {
+        XCTAssertEqual(LiveScanner.visionOrientation(device: .portrait, position: .back), .right)
+        XCTAssertEqual(LiveScanner.visionOrientation(device: .landscapeLeft, position: .back), .up)
+        XCTAssertEqual(LiveScanner.visionOrientation(device: .landscapeRight, position: .back), .down)
+        XCTAssertEqual(LiveScanner.visionOrientation(device: .portraitUpsideDown, position: .back), .left)
+        // Front camera mirrors horizontally.
+        XCTAssertEqual(LiveScanner.visionOrientation(device: .portrait, position: .front), .leftMirrored)
     }
 }
