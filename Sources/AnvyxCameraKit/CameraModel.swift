@@ -338,6 +338,40 @@ public final class CameraModel {
         }
     }
 
+    // MARK: - Focus stabilization (crisp document capture)
+
+    /// Wait (up to `timeout`s) until focus & exposure stop adjusting, then lock
+    /// them — so a capture isn't taken mid-adjustment. Call before ``capturePhoto()``
+    /// and pair with ``restoreContinuousFocus()`` afterwards.
+    public func lockFocusAndExposureWhenStable(timeout: TimeInterval = 1.5) async {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                guard let device = videoInput?.device else { continuation.resume(); return }
+                let deadline = Date().addingTimeInterval(timeout)
+                while device.isAdjustingFocus || device.isAdjustingExposure, Date() < deadline {
+                    Thread.sleep(forTimeInterval: 0.05)
+                }
+                if (try? device.lockForConfiguration()) != nil {
+                    if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
+                    if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
+                    device.unlockForConfiguration()
+                }
+                continuation.resume()
+            }
+        }
+    }
+
+    /// Restore continuous autofocus / auto-exposure after a stabilized capture.
+    public func restoreContinuousFocus() {
+        queue.async { [self] in
+            guard let device = videoInput?.device,
+                  (try? device.lockForConfiguration()) != nil else { return }
+            if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
+            if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
+            device.unlockForConfiguration()
+        }
+    }
+
     // MARK: - Controls
 
     public func switchCamera() {

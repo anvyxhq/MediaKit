@@ -67,6 +67,12 @@ public struct LiveScannerView: View {
                 }
                 .padding()
 
+                Text(scanner.guidance.message)
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 14).padding(.vertical, 8)
+                    .background(.ultraThinMaterial, in: Capsule())
+                    .padding(.top, 8)
+
                 Spacer()
 
                 Button {

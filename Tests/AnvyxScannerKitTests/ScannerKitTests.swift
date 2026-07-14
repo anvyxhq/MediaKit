@@ -99,6 +99,41 @@ final class ScannerKitTests: XCTestCase {
         XCTAssertEqual(image.extent.height, 480)
     }
 
+    private func filledBuffer(width: Int, height: Int, gray: UInt8) -> CVPixelBuffer {
+        let buffer = pixelBuffer(width: width, height: height)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        if let base = CVPixelBufferGetBaseAddress(buffer) {
+            memset(base, Int32(gray), CVPixelBufferGetBytesPerRow(buffer) * height)
+        }
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        return buffer
+    }
+
+    func testAverageBrightness() {
+        XCTAssertEqual(FrameQuality.averageBrightness(of: filledBuffer(width: 96, height: 96, gray: 0)), 0, accuracy: 0.02)
+        XCTAssertEqual(FrameQuality.averageBrightness(of: filledBuffer(width: 96, height: 96, gray: 255)), 1, accuracy: 0.02)
+        XCTAssertEqual(FrameQuality.averageBrightness(of: filledBuffer(width: 96, height: 96, gray: 128)), 0.5, accuracy: 0.03)
+    }
+
+    func testQuadArea() {
+        let full = DocumentQuad(topLeft: CGPoint(x: 0, y: 1), topRight: CGPoint(x: 1, y: 1),
+                                bottomLeft: CGPoint(x: 0, y: 0), bottomRight: CGPoint(x: 1, y: 0))
+        XCTAssertEqual(FrameQuality.area(of: full), 1.0, accuracy: 0.001)
+        let half = DocumentQuad(topLeft: CGPoint(x: 0.25, y: 0.75), topRight: CGPoint(x: 0.75, y: 0.75),
+                                bottomLeft: CGPoint(x: 0.25, y: 0.25), bottomRight: CGPoint(x: 0.75, y: 0.25))
+        XCTAssertEqual(FrameQuality.area(of: half), 0.25, accuracy: 0.001)
+    }
+
+    func testPerfMetricsReturnValues() {
+        XCTAssertGreaterThan(PerfMetrics.memoryFootprintBytes(), 0)
+        XCTAssertGreaterThanOrEqual(PerfMetrics.cpuUsagePercent(), 0)
+    }
+
+    func testGuidanceMessagesNonEmpty() {
+        let cases: [ScanGuidance] = [.searching, .tooDark, .tooBright, .moveCloser, .moveAway, .holdSteady, .ready]
+        for guidance in cases { XCTAssertFalse(guidance.message.isEmpty) }
+    }
+
     func testVisionOrientationMapping() {
         XCTAssertEqual(LiveScanner.visionOrientation(device: .portrait, position: .back), .right)
         XCTAssertEqual(LiveScanner.visionOrientation(device: .landscapeLeft, position: .back), .up)

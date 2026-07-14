@@ -59,6 +59,14 @@ public final class LiveScanner {
     public private(set) var textLines: [TextLine] = []
     /// Aspect ratio (width / height) of the analyzed frame in display orientation.
     public private(set) var frameAspect: CGFloat = 3.0 / 4.0
+    /// Live guidance for the user (brightness / framing), e.g. "Move closer".
+    public private(set) var guidance: ScanGuidance = .searching
+
+    // Guidance tuning.
+    public var darkThreshold: CGFloat = 0.22
+    public var brightThreshold: CGFloat = 0.92
+    public var nearAreaThreshold: CGFloat = 0.85   // above → too close
+    public var farAreaThreshold: CGFloat = 0.18    // below → too far
 
     public let camera = CameraModel()
 
@@ -172,6 +180,8 @@ public final class LiveScanner {
         let snapshot = self.snapshot
         let holdDuration = self.autoCaptureHoldDuration
         let movementThreshold = self.autoCaptureMovementThreshold
+        let dark = self.darkThreshold, bright = self.brightThreshold
+        let nearArea = self.nearAreaThreshold, farArea = self.farAreaThreshold
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let stream = await self?.camera.videoFrames() else { return }
             let handler = VNSequenceRequestHandler()
@@ -180,6 +190,7 @@ public final class LiveScanner {
             var lastAnalysis: CFTimeInterval = 0
             var idleFrames = 0
             var steadyCentroid: CGPoint?
+            var steadyCount = -1
             var steadySince: CFTimeInterval = 0
 
             for await frame in stream {
@@ -189,12 +200,25 @@ public final class LiveScanner {
                 let now = CACurrentMediaTime()
                 guard now - lastAnalysis >= interval else { continue }
                 guard let pixelBuffer = frame.pixelBuffer else { continue }
+                lastAnalysis = now
 
                 let snap = snapshot.withLock { $0 }
                 let image = LiveScanner.analysisImage(from: pixelBuffer, orientation: snap.orientation,
                                                       maxDimension: maxDimension)
-                lastAnalysis = now
                 let aspect = image.extent.height > 0 ? image.extent.width / image.extent.height : 3.0 / 4.0
+
+                // Cheap brightness pre-gate: skip the model on unusable frames.
+                let brightness = FrameQuality.averageBrightness(of: pixelBuffer)
+                if brightness < dark {
+                    steadyCentroid = nil
+                    await self?.publish(quads: [], textLines: [], aspect: aspect, guidance: .tooDark)
+                    continue
+                }
+                if brightness > bright {
+                    steadyCentroid = nil
+                    await self?.publish(quads: [], textLines: [], aspect: aspect, guidance: .tooBright)
+                    continue
+                }
 
                 var quads: [DocumentQuad] = []
                 var lines: [TextLine] = []
@@ -218,24 +242,46 @@ public final class LiveScanner {
                     lines = (try? textDetector.detect(in: image, using: handler)) ?? []
                 }
 
-                idleFrames = (quads.isEmpty && lines.isEmpty) ? idleFrames + 1 : 0
-                await self?.publish(quads: quads, textLines: lines, aspect: aspect)
-
-                // Auto-capture: fire once a document is held steady long enough.
-                if snap.autoCapture, snap.mode != .text, let primary = quads.first {
-                    let centroid = QuadTracker.centroid(primary)
-                    if let previous = steadyCentroid,
-                       hypot(centroid.x - previous.x, centroid.y - previous.y) < movementThreshold {
-                        if now - steadySince >= holdDuration {
-                            steadyCentroid = nil   // require re-steadying before the next shot
-                            await self?.performAutoCapture()
-                        }
-                    } else {
-                        steadyCentroid = centroid
-                        steadySince = now
-                    }
+                // Steadiness of the whole set (count + average centroid) — works
+                // for one or many documents.
+                var steadyEnough = false
+                let setCentroid = quads.isEmpty ? nil
+                    : quads.reduce(CGPoint.zero) { CGPoint(x: $0.x + QuadTracker.centroid($1).x,
+                                                           y: $0.y + QuadTracker.centroid($1).y) }
+                        .applying(CGAffineTransform(scaleX: 1.0 / CGFloat(quads.count), y: 1.0 / CGFloat(quads.count)))
+                if let centroid = setCentroid, quads.count == steadyCount,
+                   let previous = steadyCentroid,
+                   hypot(centroid.x - previous.x, centroid.y - previous.y) < movementThreshold {
+                    steadyEnough = now - steadySince >= holdDuration
+                } else if let centroid = setCentroid {
+                    steadyCentroid = centroid; steadyCount = quads.count; steadySince = now
                 } else {
-                    steadyCentroid = nil
+                    steadyCentroid = nil; steadyCount = -1
+                }
+
+                // Guidance — distance framing only makes sense for a single document;
+                // multi-doc just reports searching / hold / ready.
+                var guidance: ScanGuidance = .searching
+                switch snap.mode {
+                case .text:
+                    guidance = lines.isEmpty ? .searching : .ready
+                case .singleDocument:
+                    if let primary = quads.first {
+                        let area = FrameQuality.area(of: primary)
+                        if area > nearArea { guidance = .moveAway }
+                        else if area < farArea { guidance = .moveCloser }
+                        else { guidance = steadyEnough ? .ready : .holdSteady }
+                    }
+                case .document:
+                    if !quads.isEmpty { guidance = steadyEnough ? .ready : .holdSteady }
+                }
+
+                idleFrames = (quads.isEmpty && lines.isEmpty) ? idleFrames + 1 : 0
+                await self?.publish(quads: quads, textLines: lines, aspect: aspect, guidance: guidance)
+
+                if snap.autoCapture, steadyEnough, !quads.isEmpty {
+                    steadyCentroid = nil; steadyCount = -1   // require re-steadying before the next shot
+                    await self?.performAutoCapture()
                 }
             }
         }
@@ -265,8 +311,9 @@ public final class LiveScanner {
         return image
     }
 
-    private func publish(quads: [DocumentQuad], textLines: [TextLine], aspect: CGFloat) {
+    private func publish(quads: [DocumentQuad], textLines: [TextLine], aspect: CGFloat, guidance: ScanGuidance) {
         frameAspect = aspect
+        if guidance != self.guidance { self.guidance = guidance }
         if quads.isEmpty, textLines.isEmpty, self.quads.isEmpty, self.textLines.isEmpty { return }
         self.quads = quads
         self.textLines = textLines
@@ -278,7 +325,11 @@ public final class LiveScanner {
     /// document, perspective-corrected; text mode returns the photo. Detection
     /// runs on a downscaled copy for speed, correction on the full-res image.
     public func capture() async -> [UIImage] {
-        guard let photo = await camera.capturePhoto(), let full = photo.cgImage else { return [] }
+        // Wait for focus/exposure to settle so the photo is sharp, then restore AF.
+        await camera.lockFocusAndExposureWhenStable()
+        let photo = await camera.capturePhoto()
+        camera.restoreContinuousFocus()
+        guard let photo, let full = photo.cgImage else { return [] }
         guard mode != .text else { return [photo] }
 
         let small = downscaledForDetection(full)
