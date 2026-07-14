@@ -91,12 +91,14 @@ public final class CameraModel {
         interruptionTasks = [
             Task { @MainActor [weak self] in
                 for await note in center.notifications(named: AVCaptureSession.wasInterruptedNotification) {
-                    self?.beginInterruption(note)
+                    guard let self else { break }
+                    self.beginInterruption(note)
                 }
             },
             Task { @MainActor [weak self] in
                 for await note in center.notifications(named: AVCaptureSession.interruptionEndedNotification) {
-                    self?.endInterruption(note)
+                    guard let self else { break }
+                    self.endInterruption(note)
                 }
             },
         ]
@@ -321,7 +323,7 @@ public final class CameraModel {
 
         return await withCheckedContinuation { continuation in
             let delegate = PhotoCaptureDelegate { [weak self] image in
-                if image == nil { Task { @MainActor in self?.error = .captureFailed } }
+                if image == nil { Task { @MainActor in guard let self else { return }; self.error = .captureFailed } }
                 continuation.resume(returning: image)
             }
             captureDelegate = delegate
@@ -488,13 +490,13 @@ public final class CameraModel {
         rotationObservations.append(
             coordinator.observe(\.videoRotationAngleForHorizonLevelPreview, options: [.new]) { [weak self] _, change in
                 guard let angle = change.newValue else { return }
-                Task { @MainActor in self?.previewLayer?.connection?.videoRotationAngle = angle }
+                Task { @MainActor in guard let self else { return }; self.previewLayer?.connection?.videoRotationAngle = angle }
             }
         )
         rotationObservations.append(
             coordinator.observe(\.videoRotationAngleForHorizonLevelCapture, options: [.new]) { [weak self] _, change in
                 guard let angle = change.newValue else { return }
-                Task { @MainActor in self?.captureRotationAngle = angle }
+                Task { @MainActor in guard let self else { return }; self.captureRotationAngle = angle }
             }
         )
     }

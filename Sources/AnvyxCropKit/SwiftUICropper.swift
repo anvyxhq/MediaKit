@@ -19,7 +19,10 @@ public final class CropController {
 
     public init(image: UIImage, configuration: CropConfiguration = .init()) {
         cropperView = CropperView(image: image, configuration: configuration)
-        cropperView.onChange = { [weak self] in self?.syncUndoState() }
+        cropperView.onChange = { [weak self] in
+            guard let self else { return }
+            self.syncUndoState()
+        }
     }
 
     private func syncUndoState() {

@@ -201,8 +201,9 @@ public final class LiveScanner {
         let movementThreshold = self.autoCaptureMovementThreshold
         let dark = self.darkThreshold, bright = self.brightThreshold
         let nearArea = self.nearAreaThreshold, farArea = self.farAreaThreshold
+        let camera = self.camera
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
-            guard let stream = await self?.camera.videoFrames() else { return }
+            let stream = await camera.videoFrames()
             let handler = VNSequenceRequestHandler()
             let context = LiveScanner.makeContext()
             let pool = RenderBufferPool()   // reused downscale buffers (vImage) — no per-frame alloc
