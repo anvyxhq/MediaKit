@@ -78,6 +78,7 @@ public final class LiveScanner {
     private let snapshot: OSAllocatedUnfairLock<Snapshot>
     private var scanTask: Task<Void, Never>?
     private var orientationTask: Task<Void, Never>?
+    private var memoryTask: Task<Void, Never>?
 
     // Auto-capture tuning.
     /// How long a document must be held steady before auto-capturing (seconds).
@@ -115,7 +116,9 @@ public final class LiveScanner {
     public func start() async {
         if !camera.isConfigured { await camera.configure() }
         camera.start()
+        camera.configureForDocumentScanning()   // near-focus, centered AF/AE
         observeOrientation()
+        observeMemoryWarnings()
         startScanning()
     }
 
@@ -123,9 +126,21 @@ public final class LiveScanner {
     public func stop() {
         scanTask?.cancel(); scanTask = nil
         orientationTask?.cancel(); orientationTask = nil
+        memoryTask?.cancel(); memoryTask = nil
         UIDevice.current.endGeneratingDeviceOrientationNotifications()
         camera.stopVideoFrames()
         camera.stop()
+    }
+
+    private func observeMemoryWarnings() {
+        memoryTask?.cancel()
+        memoryTask = Task { @MainActor [weak self] in
+            let warnings = NotificationCenter.default.notifications(named: UIApplication.didReceiveMemoryWarningNotification)
+            for await _ in warnings {
+                guard let self else { break }
+                self.ciContext.clearCaches()
+            }
+        }
     }
 
     // MARK: - Orientation
@@ -136,7 +151,10 @@ public final class LiveScanner {
         orientationTask?.cancel()
         orientationTask = Task { @MainActor [weak self] in
             let notifications = NotificationCenter.default.notifications(named: UIDevice.orientationDidChangeNotification)
-            for await _ in notifications { self?.updateOrientation() }
+            for await _ in notifications {
+                guard let self else { break }
+                self.updateOrientation()
+            }
         }
     }
 
@@ -192,9 +210,11 @@ public final class LiveScanner {
             var steadyCentroid: CGPoint?
             var steadyCount = -1
             var steadySince: CFTimeInterval = 0
+            var framesToSkip = 5   // drop stale frames right after (re)start
 
             for await frame in stream {
                 if Task.isCancelled { break }
+                if framesToSkip > 0 { framesToSkip -= 1; continue }
                 // Adaptive throttle: analyze slower when nothing's been found lately.
                 let interval = idleFrames >= 15 ? baseInterval * 2 : baseInterval
                 let now = CACurrentMediaTime()
@@ -207,16 +227,18 @@ public final class LiveScanner {
                                                       maxDimension: maxDimension)
                 let aspect = image.extent.height > 0 ? image.extent.width / image.extent.height : 3.0 / 4.0
 
+                guard let self else { break }
+
                 // Cheap brightness pre-gate: skip the model on unusable frames.
                 let brightness = FrameQuality.averageBrightness(of: pixelBuffer)
                 if brightness < dark {
                     steadyCentroid = nil
-                    await self?.publish(quads: [], textLines: [], aspect: aspect, guidance: .tooDark)
+                    await self.publish(quads: [], textLines: [], aspect: aspect, guidance: .tooDark)
                     continue
                 }
                 if brightness > bright {
                     steadyCentroid = nil
-                    await self?.publish(quads: [], textLines: [], aspect: aspect, guidance: .tooBright)
+                    await self.publish(quads: [], textLines: [], aspect: aspect, guidance: .tooBright)
                     continue
                 }
 
@@ -277,11 +299,11 @@ public final class LiveScanner {
                 }
 
                 idleFrames = (quads.isEmpty && lines.isEmpty) ? idleFrames + 1 : 0
-                await self?.publish(quads: quads, textLines: lines, aspect: aspect, guidance: guidance)
+                await self.publish(quads: quads, textLines: lines, aspect: aspect, guidance: guidance)
 
                 if snap.autoCapture, steadyEnough, !quads.isEmpty {
                     steadyCentroid = nil; steadyCount = -1   // require re-steadying before the next shot
-                    await self?.performAutoCapture()
+                    await self.performAutoCapture()
                 }
             }
         }

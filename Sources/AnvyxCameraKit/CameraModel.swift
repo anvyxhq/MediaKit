@@ -326,9 +326,14 @@ public final class CameraModel {
             }
             captureDelegate = delegate
             queue.async { [self] in
-                let settings = AVCapturePhotoSettings()
+                let settings: AVCapturePhotoSettings = photoOutput.availablePhotoCodecTypes.contains(.hevc)
+                    ? AVCapturePhotoSettings(format: [AVVideoCodecKey: AVVideoCodecType.hevc])
+                    : AVCapturePhotoSettings()
                 settings.flashMode = flashMode
                 settings.photoQualityPrioritization = .quality
+                if #available(iOS 18, *), photoOutput.isShutterSoundSuppressionSupported {
+                    settings.isShutterSoundSuppressionEnabled = true
+                }
                 if let connection = photoOutput.connection(with: .video),
                    connection.isVideoRotationAngleSupported(angle) {
                     connection.videoRotationAngle = angle
@@ -357,6 +362,32 @@ public final class CameraModel {
                     device.unlockForConfiguration()
                 }
                 continuation.resume()
+            }
+        }
+    }
+
+    /// Tune focus/exposure for close-range document scanning: continuous AF with
+    /// the near-range restriction, smooth AF, and centered focus/exposure.
+    public func configureForDocumentScanning() {
+        queue.async { [self] in
+            guard let device = videoInput?.device, (try? device.lockForConfiguration()) != nil else { return }
+            if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
+            if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = .near }
+            if device.isSmoothAutoFocusSupported { device.isSmoothAutoFocusEnabled = true }
+            let center = CGPoint(x: 0.5, y: 0.5)
+            if device.isFocusPointOfInterestSupported { device.focusPointOfInterest = center }
+            if device.isExposurePointOfInterestSupported { device.exposurePointOfInterest = center }
+            if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
+            device.unlockForConfiguration()
+        }
+    }
+
+    /// Whether the active input is a genuine built-in camera (not Continuity/USB/
+    /// virtual). Reads on the session queue to avoid racing device configuration.
+    public func isUsingTrustedCamera() async -> Bool {
+        await withCheckedContinuation { continuation in
+            queue.async { [self] in
+                continuation.resume(returning: videoInput?.device.isTrustedBuiltInCamera ?? false)
             }
         }
     }
@@ -477,11 +508,8 @@ public final class CameraModel {
     }
 
     nonisolated private static func device(for position: AVCaptureDevice.Position) -> AVCaptureDevice? {
-        AVCaptureDevice.DiscoverySession(
-            deviceTypes: [.builtInTripleCamera, .builtInDualCamera, .builtInWideAngleCamera],
-            mediaType: .video,
-            position: position
-        ).devices.first
+        // Priority-ordered selection with a lockForConfiguration functionality probe.
+        CameraDeviceDetector().detect(for: position).device
     }
 }
 
