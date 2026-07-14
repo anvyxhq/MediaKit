@@ -12,6 +12,7 @@ import CoreVideo
 import Vision
 import Metal
 import QuartzCore
+import Accelerate
 import Observation
 import os
 import AnvyxCameraKit
@@ -204,6 +205,7 @@ public final class LiveScanner {
             guard let stream = await self?.camera.videoFrames() else { return }
             let handler = VNSequenceRequestHandler()
             let context = LiveScanner.makeContext()
+            let pool = RenderBufferPool()   // reused downscale buffers (vImage) — no per-frame alloc
             var tracker = QuadTracker()
             var lastAnalysis: CFTimeInterval = 0
             var idleFrames = 0
@@ -219,18 +221,19 @@ public final class LiveScanner {
                 let interval = idleFrames >= 15 ? baseInterval * 2 : baseInterval
                 let now = CACurrentMediaTime()
                 guard now - lastAnalysis >= interval else { continue }
-                guard let pixelBuffer = frame.pixelBuffer else { continue }
+                guard let pixelBuffer = frame.pixelBuffer,
+                      let analysis = pool.downscaled(pixelBuffer, maxDimension: maxDimension) else { continue }
                 lastAnalysis = now
 
                 let snap = snapshot.withLock { $0 }
-                let image = LiveScanner.analysisImage(from: pixelBuffer, orientation: snap.orientation,
-                                                      maxDimension: maxDimension)
-                let aspect = image.extent.height > 0 ? image.extent.width / image.extent.height : 3.0 / 4.0
+                let aspect = LiveScanner.orientedAspect(width: CVPixelBufferGetWidth(analysis),
+                                                        height: CVPixelBufferGetHeight(analysis),
+                                                        orientation: snap.orientation)
 
                 guard let self else { break }
 
-                // Cheap brightness pre-gate: skip the model on unusable frames.
-                let brightness = FrameQuality.averageBrightness(of: pixelBuffer)
+                // Cheap brightness pre-gate on the downscaled frame: skip the model on unusable frames.
+                let brightness = FrameQuality.averageBrightness(of: analysis)
                 if brightness < dark {
                     steadyCentroid = nil
                     await self.publish(quads: [], textLines: [], aspect: aspect, guidance: .tooDark)
@@ -246,22 +249,23 @@ public final class LiveScanner {
                 var lines: [TextLine] = []
                 switch snap.mode {
                 case .document:
-                    let scored = (try? documentDetector.detectScored(in: image, using: handler)) ?? []
+                    let scored = (try? documentDetector.detectScored(in: analysis, orientation: snap.orientation, using: handler)) ?? []
                     quads = tracker.update(scored)
                 case .singleDocument:
                     var scored: [ScoredQuad] = []
                     if #available(iOS 26, *) {
-                        if let cgImage = context.createCGImage(image, from: image.extent),
+                        let oriented = CIImage(cvPixelBuffer: analysis).oriented(snap.orientation)
+                        if let cgImage = context.createCGImage(oriented, from: oriented.extent),
                            let quad = try? await DocumentEdgeDetector().detectQuad(in: cgImage) {
                             scored = [ScoredQuad(quad: quad, confidence: 1)]
                         }
                     } else {
-                        scored = Array(((try? documentDetector.detectScored(in: image, using: handler)) ?? []).prefix(1))
+                        scored = Array(((try? documentDetector.detectScored(in: analysis, orientation: snap.orientation, using: handler)) ?? []).prefix(1))
                     }
                     quads = tracker.update(scored)
                 case .text:
                     tracker.reset()
-                    lines = (try? textDetector.detect(in: image, using: handler)) ?? []
+                    lines = (try? textDetector.detect(in: analysis, orientation: snap.orientation, using: handler)) ?? []
                 }
 
                 // Steadiness of the whole set (count + average centroid) — works
@@ -320,17 +324,16 @@ public final class LiveScanner {
         if !images.isEmpty { onAutoCapture?(images) }
     }
 
-    /// Build an oriented, downscaled `CIImage` for analysis (no `CGImage` allocation).
-    nonisolated static func analysisImage(from pixelBuffer: CVPixelBuffer,
-                                          orientation: CGImagePropertyOrientation,
-                                          maxDimension: CGFloat) -> CIImage {
-        var image = CIImage(cvPixelBuffer: pixelBuffer).oriented(orientation)
-        let longest = max(image.extent.width, image.extent.height)
-        if longest > maxDimension, longest > 0 {
-            let scale = maxDimension / longest
-            image = image.transformed(by: CGAffineTransform(scaleX: scale, y: scale))
+    /// Aspect ratio (width / height) in display orientation for a buffer of the
+    /// given pixel size.
+    nonisolated static func orientedAspect(width: Int, height: Int,
+                                           orientation: CGImagePropertyOrientation) -> CGFloat {
+        let w = CGFloat(width), h = CGFloat(height)
+        guard w > 0, h > 0 else { return 3.0 / 4.0 }
+        switch orientation {
+        case .right, .left, .rightMirrored, .leftMirrored: return h / w   // rotated 90°
+        default: return w / h
         }
-        return image
     }
 
     private func publish(quads: [DocumentQuad], textLines: [TextLine], aspect: CGFloat, guidance: ScanGuidance) {

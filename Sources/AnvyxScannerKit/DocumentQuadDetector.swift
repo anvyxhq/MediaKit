@@ -113,4 +113,13 @@ public struct DocumentQuadDetector: Sendable {
         try handler.perform([request], on: image, orientation: orientation)
         return scored(from: request)
     }
+
+    /// Scored detection on a (pooled, downscaled) pixel buffer.
+    public func detectScored(in pixelBuffer: CVPixelBuffer,
+                             orientation: CGImagePropertyOrientation,
+                             using handler: VNSequenceRequestHandler) throws -> [ScoredQuad] {
+        let request = makeRequest()
+        try handler.perform([request], on: pixelBuffer, orientation: orientation)
+        return scored(from: request)
+    }
 }

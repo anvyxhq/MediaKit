@@ -85,18 +85,35 @@ final class ScannerKitTests: XCTestCase {
         return buffer!
     }
 
-    func testAnalysisImageDownscalesLargeFrame() {
+    func testPoolDownscalesLargeFrame() {
+        let pool = RenderBufferPool()
         let large = pixelBuffer(width: 4032, height: 3024)
-        let image = LiveScanner.analysisImage(from: large, orientation: .up, maxDimension: 1024)
-        XCTAssertLessThanOrEqual(max(image.extent.width, image.extent.height), 1024)
-        XCTAssertEqual(image.extent.width / image.extent.height, 4.0 / 3.0, accuracy: 0.02)
+        let out = pool.downscaled(large, maxDimension: 1024)
+        let buffer = try? XCTUnwrap(out)
+        XCTAssertNotNil(buffer)
+        XCTAssertLessThanOrEqual(max(CVPixelBufferGetWidth(buffer!), CVPixelBufferGetHeight(buffer!)), 1024)
+        let ratio = CGFloat(CVPixelBufferGetWidth(buffer!)) / CGFloat(CVPixelBufferGetHeight(buffer!))
+        XCTAssertEqual(ratio, 4.0 / 3.0, accuracy: 0.02)
     }
 
-    func testAnalysisImageKeepsSmallFrame() {
-        let small = pixelBuffer(width: 640, height: 480)
-        let image = LiveScanner.analysisImage(from: small, orientation: .up, maxDimension: 1024)
-        XCTAssertEqual(image.extent.width, 640)
-        XCTAssertEqual(image.extent.height, 480)
+    func testPoolKeepsSmallFrame() {
+        let pool = RenderBufferPool()
+        let out = pool.downscaled(pixelBuffer(width: 640, height: 480), maxDimension: 1024)
+        XCTAssertEqual(CVPixelBufferGetWidth(out!), 640)
+        XCTAssertEqual(CVPixelBufferGetHeight(out!), 480)
+    }
+
+    func testPoolReusesBuffers() {
+        let pool = RenderBufferPool()
+        let source = pixelBuffer(width: 1920, height: 1080)
+        _ = pool.downscaled(source, maxDimension: 1024)
+        // Second call at the same target size should still produce a valid buffer.
+        XCTAssertNotNil(pool.downscaled(source, maxDimension: 1024))
+    }
+
+    func testOrientedAspectSwapsForRotation() {
+        XCTAssertEqual(LiveScanner.orientedAspect(width: 1920, height: 1080, orientation: .up), 16.0 / 9.0, accuracy: 0.01)
+        XCTAssertEqual(LiveScanner.orientedAspect(width: 1920, height: 1080, orientation: .right), 9.0 / 16.0, accuracy: 0.01)
     }
 
     private func filledBuffer(width: Int, height: Int, gray: UInt8) -> CVPixelBuffer {
