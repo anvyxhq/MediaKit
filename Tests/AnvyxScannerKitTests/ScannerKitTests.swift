@@ -71,6 +71,14 @@ final class ScannerKitTests: XCTestCase {
         XCTAssertEqual(scanner.mode, .singleDocument)
     }
 
+    @MainActor
+    func testAutoCaptureToggle() {
+        let scanner = LiveScanner(mode: .document, autoCapture: true)
+        XCTAssertTrue(scanner.autoCaptureEnabled)
+        scanner.autoCaptureEnabled = false
+        XCTAssertFalse(scanner.autoCaptureEnabled)
+    }
+
     private func pixelBuffer(width: Int, height: Int) -> CVPixelBuffer {
         var buffer: CVPixelBuffer?
         CVPixelBufferCreate(kCFAllocatorDefault, width, height, kCVPixelFormatType_32BGRA, nil, &buffer)

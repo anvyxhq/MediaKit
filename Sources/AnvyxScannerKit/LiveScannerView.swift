@@ -27,11 +27,12 @@ public struct LiveScannerView: View {
 
     public init(
         mode: LiveScanner.Mode = .document,
+        autoCapture: Bool = false,
         maximumDocuments: Int = 3,
         onCapture: @escaping ([UIImage]) -> Void,
         onCancel: @escaping () -> Void = {}
     ) {
-        _scanner = State(initialValue: LiveScanner(mode: mode, maximumDocuments: maximumDocuments))
+        _scanner = State(initialValue: LiveScanner(mode: mode, autoCapture: autoCapture, maximumDocuments: maximumDocuments))
         self.onCapture = onCapture
         self.onCancel = onCancel
     }
@@ -58,7 +59,11 @@ public struct LiveScannerView: View {
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 260)
                     Spacer()
-                    Color.clear.frame(width: 24, height: 24)   // balances the leading button
+                    button(scanner.autoCaptureEnabled ? "bolt.fill" : "bolt.slash",
+                           scanner.autoCaptureEnabled ? "Auto-capture on" : "Auto-capture off") {
+                        scanner.autoCaptureEnabled.toggle()
+                    }
+                    .foregroundStyle(scanner.autoCaptureEnabled ? .yellow : .white)
                 }
                 .padding()
 
@@ -77,7 +82,10 @@ public struct LiveScannerView: View {
             .foregroundStyle(.white)
         }
         .background(Color.black)
-        .task { await scanner.start() }
+        .task {
+            scanner.onAutoCapture = onCapture   // auto-captured pages use the same handler
+            await scanner.start()
+        }
         .onDisappear { scanner.stop() }
         .onChange(of: scenePhase) { _, phase in
             // Pause the camera + Vision when backgrounded; resume when active.

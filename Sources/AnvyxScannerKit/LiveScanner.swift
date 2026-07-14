@@ -38,10 +38,20 @@ public final class LiveScanner {
     struct Snapshot: Sendable {
         var mode: Mode
         var orientation: CGImagePropertyOrientation
+        var autoCapture: Bool
     }
 
     /// Live mode; can be switched while scanning.
     public var mode: Mode { didSet { let mode = mode; snapshot.withLock { $0.mode = mode } } }
+
+    /// When on, the scanner auto-captures once a document is held steady (document
+    /// modes only). Toggle any time.
+    public var autoCaptureEnabled: Bool {
+        didSet { let value = autoCaptureEnabled; snapshot.withLock { $0.autoCapture = value } }
+    }
+
+    /// Called on the main actor with the auto-captured pages.
+    public var onAutoCapture: (([UIImage]) -> Void)?
 
     /// Detected document quads (document mode), normalized bottom-left, stabilized.
     public private(set) var quads: [DocumentQuad] = []
@@ -61,16 +71,27 @@ public final class LiveScanner {
     private var scanTask: Task<Void, Never>?
     private var orientationTask: Task<Void, Never>?
 
+    // Auto-capture tuning.
+    /// How long a document must be held steady before auto-capturing (seconds).
+    public var autoCaptureHoldDuration: CFTimeInterval = 0.8
+    /// Max normalized centroid movement still considered "steady".
+    public var autoCaptureMovementThreshold: CGFloat = 0.02
+    private let autoCaptureCooldown: CFTimeInterval = 1.5
+    private var isCapturing = false
+    private var lastAutoCaptureTime: CFTimeInterval = 0
+
     public init(mode: Mode = .document,
+                autoCapture: Bool = false,
                 maximumDocuments: Int = 3,
                 analysisFrameRate: Double = 12,
                 maxAnalysisDimension: CGFloat = 1024) {
         self.mode = mode
+        self.autoCaptureEnabled = autoCapture
         self.analysisInterval = analysisFrameRate > 0 ? 1.0 / analysisFrameRate : 0
         self.maxAnalysisDimension = maxAnalysisDimension
         self.documentDetector = DocumentQuadDetector(maximumDocuments: maximumDocuments)
         self.textDetector = TextLineDetector(recognitionLevel: .fast)
-        self.snapshot = OSAllocatedUnfairLock(initialState: Snapshot(mode: mode, orientation: .right))
+        self.snapshot = OSAllocatedUnfairLock(initialState: Snapshot(mode: mode, orientation: .right, autoCapture: autoCapture))
     }
 
     /// A Metal-backed context when available (fast, low-overhead), else the default.
@@ -149,6 +170,8 @@ public final class LiveScanner {
         let baseInterval = self.analysisInterval
         let maxDimension = self.maxAnalysisDimension
         let snapshot = self.snapshot
+        let holdDuration = self.autoCaptureHoldDuration
+        let movementThreshold = self.autoCaptureMovementThreshold
         scanTask = Task.detached(priority: .userInitiated) { [weak self] in
             guard let stream = await self?.camera.videoFrames() else { return }
             let handler = VNSequenceRequestHandler()
@@ -156,6 +179,8 @@ public final class LiveScanner {
             var tracker = QuadTracker()
             var lastAnalysis: CFTimeInterval = 0
             var idleFrames = 0
+            var steadyCentroid: CGPoint?
+            var steadySince: CFTimeInterval = 0
 
             for await frame in stream {
                 if Task.isCancelled { break }
@@ -195,8 +220,36 @@ public final class LiveScanner {
 
                 idleFrames = (quads.isEmpty && lines.isEmpty) ? idleFrames + 1 : 0
                 await self?.publish(quads: quads, textLines: lines, aspect: aspect)
+
+                // Auto-capture: fire once a document is held steady long enough.
+                if snap.autoCapture, snap.mode != .text, let primary = quads.first {
+                    let centroid = QuadTracker.centroid(primary)
+                    if let previous = steadyCentroid,
+                       hypot(centroid.x - previous.x, centroid.y - previous.y) < movementThreshold {
+                        if now - steadySince >= holdDuration {
+                            steadyCentroid = nil   // require re-steadying before the next shot
+                            await self?.performAutoCapture()
+                        }
+                    } else {
+                        steadyCentroid = centroid
+                        steadySince = now
+                    }
+                } else {
+                    steadyCentroid = nil
+                }
             }
         }
+    }
+
+    private func performAutoCapture() async {
+        guard !isCapturing, autoCaptureEnabled else { return }
+        let now = CACurrentMediaTime()
+        guard now - lastAutoCaptureTime > autoCaptureCooldown else { return }
+        isCapturing = true
+        let images = await capture()
+        isCapturing = false
+        lastAutoCaptureTime = CACurrentMediaTime()
+        if !images.isEmpty { onAutoCapture?(images) }
     }
 
     /// Build an oriented, downscaled `CIImage` for analysis (no `CGImage` allocation).
