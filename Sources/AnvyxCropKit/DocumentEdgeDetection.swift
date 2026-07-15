@@ -52,6 +52,23 @@ public enum DocumentPerspective {
     }
 }
 
+/// Detects the horizon tilt of a photo for one-tap auto-straightening, using
+/// Vision's classic `VNDetectHorizonRequest` (available since iOS 11, so unlike
+/// ``DocumentEdgeDetector`` it needs no availability gate).
+public enum HorizonDetector {
+    /// The roll angle (in radians) to apply so the detected horizon becomes level,
+    /// or `nil` when no horizon is found. Runs synchronously — call it off the main
+    /// actor (e.g. inside `Task.detached`) for large images.
+    public nonisolated static func levelingAngle(in image: CGImage) -> CGFloat? {
+        let request = VNDetectHorizonRequest()
+        let handler = VNImageRequestHandler(cgImage: image, options: [:])
+        do { try handler.perform([request]) } catch { return nil }
+        guard let observation = request.results?.first else { return nil }
+        // `angle` is the horizon's roll; negate it to level the image.
+        return -CGFloat(observation.angle)
+    }
+}
+
 /// Detects a document's edges in an image using Vision's
 /// `DetectDocumentSegmentationRequest`, returning its corner quad — the basis for
 /// an auto-crop / perspective-correct scan. iOS 26+.

@@ -7,9 +7,41 @@
 
 import UIKit
 
-enum CropEdge {
+enum CropEdge: CaseIterable {
     case none, topLeft, top, topRight, left, right, bottomLeft, bottom, bottomRight
     var isActive: Bool { self != .none }
+
+    /// The eight adjustable handles (excludes `.none`).
+    static var handles: [CropEdge] { allCases.filter { $0.isActive } }
+
+    var accessibilityLabel: String {
+        switch self {
+        case .none: return ""
+        case .topLeft: return "Top left crop handle"
+        case .top: return "Top crop handle"
+        case .topRight: return "Top right crop handle"
+        case .left: return "Left crop handle"
+        case .right: return "Right crop handle"
+        case .bottomLeft: return "Bottom left crop handle"
+        case .bottom: return "Bottom crop handle"
+        case .bottomRight: return "Bottom right crop handle"
+        }
+    }
+}
+
+/// A VoiceOver-adjustable proxy for one crop-box handle: increment enlarges the
+/// box on that side, decrement shrinks it.
+final class CropHandleAccessibilityElement: UIAccessibilityElement {
+    private let onAdjust: (CGFloat) -> Void
+    init(container: Any, label: String, onAdjust: @escaping (CGFloat) -> Void) {
+        self.onAdjust = onAdjust
+        super.init(accessibilityContainer: container)
+        accessibilityLabel = label
+        accessibilityTraits = .adjustable
+        accessibilityHint = "Swipe up or down to adjust the crop area."
+    }
+    override func accessibilityIncrement() { onAdjust(1) }
+    override func accessibilityDecrement() { onAdjust(-1) }
 }
 
 /// Overlay that dims/blurs outside the crop box, draws the shaped border, grid,
@@ -21,6 +53,20 @@ final class CropOverlayView: UIView {
     var showsGrid = true { didSet { setNeedsDisplay() } }
     var maskColor: UIColor = UIColor.black.withAlphaComponent(0.55) { didSet { setNeedsDisplay() } }
     var hotArea: CGFloat = 44
+    /// The handle currently being dragged — highlighted while active.
+    var activeEdge: CropEdge = .none { didSet { setNeedsDisplay() } }
+    /// While interacting, show a denser grid and (for the blur mask) cross-fade to
+    /// a plain dim so the image stays readable during the gesture.
+    var isInteracting = false {
+        didSet {
+            guard isInteracting != oldValue else { return }
+            setNeedsDisplay()
+            guard let blurView else { return }
+            UIView.animate(withDuration: 0.2) { blurView.alpha = self.isInteracting ? 0 : 1 }
+        }
+    }
+    /// VoiceOver handle adjustment: `(edge, +1 grow / -1 shrink)`.
+    var onHandleAdjust: ((CropEdge, CGFloat) -> Void)?
 
     private let blurView: UIVisualEffectView?
     private let maskShapeLayer = CAShapeLayer()
@@ -49,13 +95,7 @@ final class CropOverlayView: UIView {
         updateBlurMask()
     }
 
-    private func shapePath(in rect: CGRect) -> UIBezierPath {
-        switch shape {
-        case .rectangle: return UIBezierPath(rect: rect)
-        case .ellipse: return UIBezierPath(ovalIn: rect)
-        case .roundedRect(let r): return UIBezierPath(roundedRect: rect, cornerRadius: r)
-        }
-    }
+    private func shapePath(in rect: CGRect) -> UIBezierPath { shape.bezierPath(in: rect) }
 
     /// For the blur variant, punch the crop shape out of the blur layer.
     private func updateBlurMask() {
@@ -68,7 +108,8 @@ final class CropOverlayView: UIView {
     }
 
     override func draw(_ rect: CGRect) {
-        if blurView == nil {
+        // Blur mask cross-fades out while interacting; draw the dim then.
+        if blurView == nil || isInteracting {
             maskColor.setFill()
             let mask = UIBezierPath(rect: bounds)
             mask.append(shapePath(in: cropBox))
@@ -81,11 +122,32 @@ final class CropOverlayView: UIView {
         border.lineWidth = 1
         border.stroke()
 
+        let b = cropBox
+        // Highlight the edge(s) being dragged.
+        if activeEdge.isActive {
+            let hi = UIBezierPath()
+            func top() { hi.move(to: CGPoint(x: b.minX, y: b.minY)); hi.addLine(to: CGPoint(x: b.maxX, y: b.minY)) }
+            func bottom() { hi.move(to: CGPoint(x: b.minX, y: b.maxY)); hi.addLine(to: CGPoint(x: b.maxX, y: b.maxY)) }
+            func left() { hi.move(to: CGPoint(x: b.minX, y: b.minY)); hi.addLine(to: CGPoint(x: b.minX, y: b.maxY)) }
+            func right() { hi.move(to: CGPoint(x: b.maxX, y: b.minY)); hi.addLine(to: CGPoint(x: b.maxX, y: b.maxY)) }
+            switch activeEdge {
+            case .top: top()
+            case .bottom: bottom()
+            case .left: left()
+            case .right: right()
+            case .topLeft: top(); left()
+            case .topRight: top(); right()
+            case .bottomLeft: bottom(); left()
+            case .bottomRight: bottom(); right()
+            case .none: break
+            }
+            UIColor.systemYellow.setStroke(); hi.lineWidth = 2; hi.stroke()
+        }
+
         // Corner marks
         let corner: CGFloat = 18
         UIColor.white.setStroke()
         let marks = UIBezierPath()
-        let b = cropBox
         func L(_ a: CGPoint, _ c: CGPoint) { marks.move(to: a); marks.addLine(to: c) }
         L(CGPoint(x: b.minX, y: b.minY + corner), CGPoint(x: b.minX, y: b.minY)); L(CGPoint(x: b.minX, y: b.minY), CGPoint(x: b.minX + corner, y: b.minY))
         L(CGPoint(x: b.maxX - corner, y: b.minY), CGPoint(x: b.maxX, y: b.minY)); L(CGPoint(x: b.maxX, y: b.minY), CGPoint(x: b.maxX, y: b.minY + corner))
@@ -94,12 +156,14 @@ final class CropOverlayView: UIView {
         marks.lineWidth = 3
         marks.stroke()
 
-        guard showsGrid else { return }
+        // Rule-of-thirds normally; a denser grid while interacting (easier alignment).
+        guard showsGrid || isInteracting else { return }
+        let divisions = isInteracting ? 4 : 3
         let grid = UIBezierPath()
-        for i in 1...2 {
-            let x = b.minX + b.width * CGFloat(i) / 3
+        for i in 1..<divisions {
+            let x = b.minX + b.width * CGFloat(i) / CGFloat(divisions)
             grid.move(to: CGPoint(x: x, y: b.minY)); grid.addLine(to: CGPoint(x: x, y: b.maxY))
-            let y = b.minY + b.height * CGFloat(i) / 3
+            let y = b.minY + b.height * CGFloat(i) / CGFloat(divisions)
             grid.move(to: CGPoint(x: b.minX, y: y)); grid.addLine(to: CGPoint(x: b.maxX, y: y))
         }
         UIColor.white.withAlphaComponent(0.5).setStroke()
@@ -129,9 +193,42 @@ final class CropOverlayView: UIView {
     override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
         edge(at: point).isActive ? self : nil
     }
+
+    // MARK: - Accessibility
+
+    override var accessibilityElements: [Any]? {
+        get { handleAccessibilityElements() }
+        set {}
+    }
+
+    private func handleAccessibilityElements() -> [Any] {
+        CropEdge.handles.map { edge in
+            let element = CropHandleAccessibilityElement(container: self, label: edge.accessibilityLabel) { [weak self] direction in
+                self?.onHandleAdjust?(edge, direction)
+            }
+            let point = handlePoint(edge)
+            element.accessibilityFrameInContainerSpace = CGRect(x: point.x - 22, y: point.y - 22, width: 44, height: 44)
+            return element
+        }
+    }
+
+    private func handlePoint(_ edge: CropEdge) -> CGPoint {
+        let b = cropBox
+        switch edge {
+        case .topLeft: return CGPoint(x: b.minX, y: b.minY)
+        case .top: return CGPoint(x: b.midX, y: b.minY)
+        case .topRight: return CGPoint(x: b.maxX, y: b.minY)
+        case .left: return CGPoint(x: b.minX, y: b.midY)
+        case .right: return CGPoint(x: b.maxX, y: b.midY)
+        case .bottomLeft: return CGPoint(x: b.minX, y: b.maxY)
+        case .bottom: return CGPoint(x: b.midX, y: b.maxY)
+        case .bottomRight: return CGPoint(x: b.maxX, y: b.maxY)
+        case .none: return .zero
+        }
+    }
 }
 
-/// Interactive image cropper (TOCropViewController-style): pan + pinch-zoom the
+/// Interactive image cropper: pan + pinch-zoom the
 /// image, **drag the crop-box handles to resize** (free or aspect-locked), with
 /// shapes (rect / ellipse / rounded), dim or blur mask, grid, 90° rotate, flip,
 /// reset, fine rotation, and EXIF-correct output via the ``ImageCropper`` engine.
@@ -160,8 +257,19 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     /// Film preset strength in `0…1`.
     public var filmIntensity: CGFloat = 1 { didSet { refreshDisplay() } }
 
-    public var rotationAngle: CGFloat = 0 {
-        didSet { rotationContainer.transform = CGAffineTransform(rotationAngle: rotationAngle); onChange?() }
+    private var _rotationAngle: CGFloat = 0
+    /// Fine-rotation angle in radians, clamped to `±configuration.rotationLimit`.
+    /// Setting it re-scales the image so it always covers the crop box (no empty
+    /// corners) and keeps the covered region centered.
+    public var rotationAngle: CGFloat {
+        get { _rotationAngle }
+        set {
+            let limit = max(0, configuration.rotationLimit)
+            _rotationAngle = min(max(newValue, -limit), limit)
+            rotationContainer.transform = CGAffineTransform(rotationAngle: _rotationAngle)
+            updateRotationCoverage(recenter: true)
+            onChange?()
+        }
     }
 
     private let rotationContainer = UIView()
@@ -175,6 +283,9 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     private var activeEdge: CropEdge = .none
     private var startBox: CGRect = .zero
     private let haptic = UISelectionFeedbackGenerator()
+    /// True while the scroll view is being adjusted programmatically (coverage /
+    /// layout), so the scroll delegates don't fire `onChange` mid-layout.
+    private var isProgrammaticScroll = false
 
     public init(image: UIImage, configuration: CropConfiguration = .init()) {
         let normalized = ImageCropper.normalizedUp(image)
@@ -202,7 +313,10 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         overlay.shape = configuration.shape
         overlay.showsGrid = configuration.showsGrid
         overlay.maskColor = configuration.maskColor
-        overlay.hotArea = configuration.handleHotArea
+        overlay.hotArea = configuration.disableCropBoxDeformation ? 0 : configuration.handleHotArea
+        overlay.onHandleAdjust = { [weak self] edge, direction in
+            self?.adjustBox(edge: edge, grow: 20 * direction)
+        }
         overlay.addGestureRecognizer(UIPanGestureRecognizer(target: self, action: #selector(handleResize)))
     }
     @available(*, unavailable) public required init?(coder: NSCoder) { fatalError() }
@@ -255,6 +369,7 @@ public final class CropperView: UIView, UIScrollViewDelegate {
                 overlay.cropBox = cropBox
             }
         }
+        updateRotationCoverage(recenter: false)
     }
 
     private func fitSize(for area: CGSize, imageSize: CGSize) -> CGSize {
@@ -275,6 +390,60 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     /// The image's on-screen frame, in this view's coordinates.
     private var imageFrameInView: CGRect { convert(imageView.bounds, from: imageView) }
 
+    // MARK: - Rotation coverage
+
+    /// Half-extents (in points) of the crop box after it is rotated by `angle`
+    /// into the image's own coordinate space — the axis-aligned box the image
+    /// must contain so no empty corners show through.
+    private func rotatedBoxHalfExtents(_ angle: CGFloat) -> CGSize {
+        let c = abs(cos(angle)), s = abs(sin(angle))
+        return CGSize(width: (cropBox.width * c + cropBox.height * s) / 2,
+                      height: (cropBox.width * s + cropBox.height * c) / 2)
+    }
+
+    /// Raise the minimum zoom so the (rotated) image always covers the crop box,
+    /// bump the current zoom to meet it, optionally re-center on the crop box, and
+    /// clamp the offset so panning can't expose a corner. No-op at angle 0 with a
+    /// box no larger than the fitted image.
+    private func updateRotationCoverage(recenter: Bool) {
+        let fit = fitSize(for: scrollView.frame.size, imageSize: workingImage.size)
+        guard fit.width > 1, fit.height > 1, cropBox.width > 1, cropBox.height > 1 else { return }
+        let h = rotatedBoxHalfExtents(_rotationAngle)
+        let coverage = max(1, max(2 * h.width / fit.width, 2 * h.height / fit.height))
+        // These programmatic scroll/zoom mutations fire the scroll delegates, but
+        // they must NOT cascade into `onChange` — this runs during `layoutSubviews`,
+        // and notifying observers there mutates SwiftUI state mid-update.
+        isProgrammaticScroll = true
+        scrollView.minimumZoomScale = coverage
+        if scrollView.zoomScale < coverage { scrollView.zoomScale = coverage }
+        if recenter { centerContentOnBox() }
+        clampOffsetForRotation()
+        isProgrammaticScroll = false
+    }
+
+    /// Center the zoomed content under the (centered) crop box.
+    private func centerContentOnBox() {
+        let content = scrollView.contentSize
+        let area = scrollView.bounds.size
+        scrollView.contentOffset = CGPoint(x: max(0, (content.width - area.width) / 2),
+                                           y: max(0, (content.height - area.height) / 2))
+    }
+
+    /// Keep the rotated crop box fully inside the image while panning. Assumes the
+    /// box is centered in the scroll area (the resting state the editor maintains).
+    private func clampOffsetForRotation() {
+        guard _rotationAngle != 0 else { return }
+        let content = scrollView.contentSize
+        let area = scrollView.bounds.size
+        let h = rotatedBoxHalfExtents(_rotationAngle)
+        let loX = h.width - area.width / 2, hiX = content.width - h.width - area.width / 2
+        let loY = h.height - area.height / 2, hiY = content.height - h.height - area.height / 2
+        var o = scrollView.contentOffset
+        o.x = min(max(o.x, min(loX, hiX)), max(loX, hiX))
+        o.y = min(max(o.y, min(loY, hiY)), max(loY, hiY))
+        if o != scrollView.contentOffset { scrollView.contentOffset = o }
+    }
+
     private func defaultCropBox() -> CGRect {
         let image = imageFrameInView
         guard let ratio = configuration.aspectRatio.value(for: workingImage.size) else { return image }
@@ -288,10 +457,23 @@ public final class CropperView: UIView, UIScrollViewDelegate {
     // MARK: - Scroll view
 
     public func viewForZooming(in scrollView: UIScrollView) -> UIView? { imageView }
-    public func scrollViewDidZoom(_ scrollView: UIScrollView) { centerContent(); onChange?() }
-    public func scrollViewDidEndDragging(_ s: UIScrollView, willDecelerate: Bool) { onChange?() }
-    public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { recordUndo() }
-    public func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) { recordUndo() }
+    public func scrollViewDidZoom(_ scrollView: UIScrollView) {
+        centerContent()
+        guard !isProgrammaticScroll else { return }
+        clampOffsetForRotation(); onChange?()
+    }
+    public func scrollViewDidScroll(_ scrollView: UIScrollView) {
+        guard !isProgrammaticScroll else { return }
+        clampOffsetForRotation()
+    }
+    public func scrollViewWillBeginDragging(_ scrollView: UIScrollView) { recordUndo(); overlay.isInteracting = true }
+    public func scrollViewWillBeginZooming(_ scrollView: UIScrollView, with view: UIView?) { recordUndo(); overlay.isInteracting = true }
+    public func scrollViewDidEndDragging(_ s: UIScrollView, willDecelerate: Bool) {
+        if !willDecelerate { overlay.isInteracting = false }
+        onChange?()
+    }
+    public func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { overlay.isInteracting = false }
+    public func scrollViewDidEndZooming(_ scrollView: UIScrollView, with view: UIView?, atScale scale: CGFloat) { overlay.isInteracting = false }
 
     // MARK: - Resize handles
 
@@ -299,9 +481,13 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         let p = g.location(in: overlay)
         switch g.state {
         case .began:
+            guard !configuration.disableCropBoxDeformation else { return }
             activeEdge = overlay.edge(at: p)
-            if activeEdge.isActive { recordUndo() }
+            guard activeEdge.isActive else { return }
+            recordUndo()
             startBox = cropBox
+            overlay.activeEdge = activeEdge
+            overlay.isInteracting = true
             haptic.prepare()
         case .changed:
             guard activeEdge.isActive else { return }
@@ -309,9 +495,13 @@ public final class CropperView: UIView, UIScrollViewDelegate {
             overlay.cropBox = cropBox
             onChange?()
         case .ended, .cancelled:
+            guard activeEdge.isActive else { return }
             activeEdge = .none
+            overlay.activeEdge = .none
+            overlay.isInteracting = false
             haptic.selectionChanged()
             if configuration.growsBackAfterResize { animateBoxToFill() }
+            updateRotationCoverage(recenter: false)
         default: break
         }
     }
@@ -397,15 +587,53 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         onChange?()
     }
 
-    /// Rotate the image 90° clockwise (exact — re-orients the working image).
-    public func rotate90() {
+    /// Rotate the image 90° (exact re-orientation of the working image).
+    public func rotate90(clockwise: Bool = true) {
         recordUndo()
-        guard let rotated = ImageCropper.rotated90(workingImage, quarterTurns: 1) else { return }
+        guard let rotated = ImageCropper.rotated90(workingImage, quarterTurns: clockwise ? 1 : -1) else { return }
         workingImage = rotated
         rebuildPreviewBase()
         didInitialLayout = false
         refreshDisplay()
         setNeedsLayout(); layoutIfNeeded()
+    }
+
+    /// Rotate the image 90° counter-clockwise.
+    public func rotate90CounterClockwise() { rotate90(clockwise: false) }
+
+    /// Swap the crop box between portrait and landscape without rotating the image.
+    public func alterCropBox90() {
+        recordUndo()
+        let center = CGPoint(x: cropBox.midX, y: cropBox.midY)
+        let bounds = imageFrameInView.intersection(scrollView.frame)
+        let box = CGRect(x: center.x - cropBox.height / 2, y: center.y - cropBox.width / 2,
+                         width: cropBox.height, height: cropBox.width).intersection(bounds)
+        guard box.width > configuration.minimumBoxSize, box.height > configuration.minimumBoxSize else { return }
+        if case let .ratio(w, h) = configuration.aspectRatio { configuration.aspectRatio = .ratio(h, w) }
+        cropBox = box
+        overlay.cropBox = box
+        updateRotationCoverage(recenter: false)
+        onChange?()
+    }
+
+    /// Single-step resize of one handle (used by VoiceOver). `grow > 0` enlarges.
+    private func adjustBox(edge: CropEdge, grow: CGFloat) {
+        recordUndo()
+        var translation = CGPoint.zero
+        switch edge {
+        case .left, .topLeft, .bottomLeft: translation.x = -grow
+        case .right, .topRight, .bottomRight: translation.x = grow
+        default: break
+        }
+        switch edge {
+        case .top, .topLeft, .topRight: translation.y = -grow
+        case .bottom, .bottomLeft, .bottomRight: translation.y = grow
+        default: break
+        }
+        cropBox = resizedBox(cropBox, edge: edge, translation: translation)
+        overlay.cropBox = cropBox
+        updateRotationCoverage(recenter: false)
+        onChange?()
     }
 
     /// Flip the working image (baked in, so the crop stays exact).
@@ -534,6 +762,58 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         refreshDisplay()
     }
 
+    // MARK: - Auto detect / straighten
+
+    /// Detect the horizon and rotate the image so it's level (a no-op if none is
+    /// found). Vision runs off-main so the UI stays responsive.
+    public func autoStraighten() async {
+        let image = workingImage
+        let angle = await Task.detached(priority: .userInitiated) {
+            image.cgImage.flatMap { HorizonDetector.levelingAngle(in: $0) }
+        }.value
+        guard let angle, abs(angle) > 0.001 else { return }
+        recordUndo()
+        rotationAngle = angle   // clamped + coverage handled by the setter
+    }
+
+    /// Detect a document/rectangle and snap the crop box to it (iOS 26+). Resets
+    /// zoom and rotation first so the detected region maps predictably.
+    @available(iOS 26, *)
+    public func autoDetectCropBox() async {
+        let image = workingImage
+        guard let cg = image.cgImage,
+              let quad = try? await DocumentEdgeDetector().detectQuad(in: cg) else { return }
+        recordUndo()
+        _rotationAngle = 0
+        rotationContainer.transform = .identity
+        scrollView.zoomScale = 1
+        didInitialLayout = false
+        setNeedsLayout(); layoutIfNeeded()
+        setCropBox(fromNormalizedQuad: quad)
+    }
+
+    /// Map a Vision quad (normalized, bottom-left origin) to the crop box.
+    private func setCropBox(fromNormalizedQuad quad: DocumentQuad) {
+        let xs = [quad.topLeft.x, quad.topRight.x, quad.bottomLeft.x, quad.bottomRight.x]
+        let ys = [quad.topLeft.y, quad.topRight.y, quad.bottomLeft.y, quad.bottomRight.y]
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minY = ys.min(), let maxY = ys.max() else { return }
+        // Vision's origin is bottom-left; flip Y to the view's top-left space.
+        let topN = 1 - maxY, bottomN = 1 - minY
+        let img = imageFrameInView
+        let box = CGRect(x: img.minX + minX * img.width,
+                         y: img.minY + topN * img.height,
+                         width: (maxX - minX) * img.width,
+                         height: (bottomN - topN) * img.height)
+            .intersection(img.intersection(scrollView.frame))
+        guard box.width > configuration.minimumBoxSize, box.height > configuration.minimumBoxSize else { return }
+        configuration.aspectRatio = .free   // a detected document has an arbitrary aspect
+        cropBox = box
+        overlay.cropBox = box
+        updateRotationCoverage(recenter: false)
+        onChange?()
+    }
+
     // MARK: - Output
 
     /// Crop inputs gathered from the (main-thread) view state — so the actual
@@ -566,20 +846,35 @@ public final class CropperView: UIView, UIScrollViewDelegate {
         return ImageCropper.masked(base, shape: shape)
     }
 
+    /// The shape used for the exported image — rectangular when ``CropConfiguration/maskOnly``
+    /// is set (the shaped mask is on-screen only).
+    private var outputShape: CropShape { configuration.maskOnly ? .rectangle : configuration.shape }
+
     /// Synchronous crop (fine for small images / immediate use).
     public func croppedImage() -> UIImage? {
         guard let p = cropParameters() else { return nil }
-        return Self.render(p, shape: configuration.shape)
+        return Self.render(p, shape: outputShape)
     }
 
     /// Off-main crop — renders on a background task to keep the UI responsive
     /// for large images.
     public func croppedImageAsync() async -> UIImage? {
         guard let p = cropParameters() else { return nil }
-        let shape = configuration.shape
+        let shape = outputShape
         return await Task.detached(priority: .userInitiated) {
             CropperView.render(p, shape: shape)
         }.value
+    }
+
+    /// Apply the current crop (geometry + rotation + shape + color) to another
+    /// image that shares the source's pixel dimensions — e.g. to batch-apply one
+    /// set of edits across aligned frames.
+    public func process(_ image: UIImage) -> UIImage? {
+        guard let p = cropParameters() else { return nil }
+        let processed = ImageCropper.process(image, adjustments: adjustments, filter: colorFilter,
+                                             filterIntensity: filterIntensity, film: filmPreset,
+                                             filmIntensity: filmIntensity)
+        return Self.render((source: processed, rectPx: p.rectPx, info: p.info), shape: outputShape)
     }
 
     // MARK: - Save / restore (re-open a previous crop). `CropState` is top-level.

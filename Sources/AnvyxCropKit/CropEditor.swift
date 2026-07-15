@@ -11,7 +11,7 @@ import SwiftUI
 /// shape, filter, rotate, flip, reset), a fine-rotation dial, an adjustments
 /// panel (brightness/contrast/saturation/temperature/tint/vibrance + filter
 /// strength), and undo/redo.
-/// The CropKit equivalent of Mantis's `CropViewController`, SwiftUI-native and accessible.
+/// A complete, SwiftUI-native and accessible crop screen.
 public struct CropEditor: View {
     @State private var controller: CropController
     @State private var angle: CGFloat = 0
@@ -139,6 +139,9 @@ public struct CropEditor: View {
                 button("Rectangle") { controller.setShape(.rectangle) }
                 button("Ellipse") { controller.setShape(.ellipse) }
                 button("Rounded") { controller.setShape(.roundedRect(cornerRadius: 24)) }
+                button("Diamond") { controller.setShape(.diamond) }
+                button("Heart") { controller.setShape(.heart) }
+                button("Hexagon") { controller.setShape(.polygon(sides: 6)) }
             } label: { icon("square.on.circle") }.accessibilityLabel("Crop shape")
 
             Menu {
@@ -155,8 +158,19 @@ public struct CropEditor: View {
             } label: { icon("photo.stack") }.accessibilityLabel("Film preset")
 
             button("slider.horizontal.3", "Adjustments") { showAdjust.toggle() }
-            button("rotate.left", "Rotate 90 degrees") { controller.rotate90() }
-            button("arrow.left.and.right", "Flip") { controller.flip(horizontally: true) }
+            button("rotate.left", "Rotate counter-clockwise") { controller.rotate90CounterClockwise() }
+            button("rotate.right", "Rotate clockwise") { controller.rotate90() }
+            button("crop.rotate", "Swap crop orientation") { controller.alterCropBox90() }
+            button("arrow.left.and.right", "Flip horizontally") { controller.flip(horizontally: true) }
+            button("arrow.up.and.down", "Flip vertically") { controller.flip(horizontally: false) }
+            button("wand.and.stars", "Auto straighten") {
+                Task { await controller.autoStraighten(); angle = controller.rotationAngle }
+            }
+            if #available(iOS 26, *) {
+                button("viewfinder", "Auto detect edges") {
+                    Task { await controller.autoDetectCropBox() }
+                }
+            }
             button("arrow.counterclockwise", "Reset") { angle = 0; reset() }
 
             Spacer(minLength: 0)

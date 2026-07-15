@@ -137,13 +137,7 @@ public enum ImageCropper {
         let renderer = UIGraphicsImageRenderer(size: size, format: opaqueFormat(image))
         return renderer.image { ctx in
             let rect = CGRect(origin: .zero, size: size)
-            let path: UIBezierPath
-            switch shape {
-            case .ellipse: path = UIBezierPath(ovalIn: rect)
-            case .roundedRect(let radius): path = UIBezierPath(roundedRect: rect, cornerRadius: radius * image.scale)
-            case .rectangle: path = UIBezierPath(rect: rect)
-            }
-            path.addClip()
+            shape.bezierPath(in: rect, cornerRadiusScale: image.scale).addClip()
             image.draw(in: rect)
         }
     }

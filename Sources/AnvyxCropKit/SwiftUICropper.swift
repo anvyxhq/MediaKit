@@ -35,9 +35,20 @@ public final class CropController {
 
     public func setAspectRatio(_ ratio: CropAspectRatio) { cropperView.setAspectRatio(ratio) }
     public func setShape(_ shape: CropShape) { cropperView.setShape(shape) }
-    public func rotate90() { cropperView.rotate90() }
+    public func rotate90(clockwise: Bool = true) { cropperView.rotate90(clockwise: clockwise) }
+    public func rotate90CounterClockwise() { cropperView.rotate90CounterClockwise() }
+    /// Swap the crop box between portrait and landscape without rotating the image.
+    public func alterCropBox90() { cropperView.alterCropBox90() }
     public func flip(horizontally: Bool = true) { cropperView.flip(horizontally: horizontally) }
     public func reset() { cropperView.reset() }
+    /// Apply the current crop settings to another same-size image (batch apply).
+    public func process(_ image: UIImage) -> UIImage? { cropperView.process(image) }
+
+    /// Detect the horizon and auto-level the image.
+    public func autoStraighten() async { await cropperView.autoStraighten() }
+    /// Detect a document/rectangle and snap the crop box to it (iOS 26+).
+    @available(iOS 26, *)
+    public func autoDetectCropBox() async { await cropperView.autoDetectCropBox() }
     public var rotationAngle: CGFloat {
         get { cropperView.rotationAngle }
         set { cropperView.rotationAngle = newValue }
