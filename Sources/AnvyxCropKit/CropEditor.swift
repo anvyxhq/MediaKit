@@ -42,24 +42,37 @@ public struct CropEditor: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            ImageCropperView(controller: controller).background(Color.black)
+            // The adjust panel floats over the cropper as a popup so toggling it
+            // never resizes the image area.
+            ZStack(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    ImageCropperView(controller: controller).background(Color.black)
 
-            if configuration.allowsRotation {
-                Group {
-                    switch configuration.dialStyle {
-                    case .ruler: RotationDial(angle: $angle).frame(height: 44)
-                    case .plate: RotationDialPlate(angle: $angle).frame(height: 120)
+                    if configuration.allowsRotation {
+                        Group {
+                            switch configuration.dialStyle {
+                            case .ruler: RotationDial(angle: $angle).frame(height: 44)
+                            case .plate: RotationDialPlate(angle: $angle).frame(height: 120)
+                            }
+                        }
+                        .background(Color.black)
+                        .onChange(of: angle) { _, newValue in controller.rotationAngle = newValue }
+                        .accessibilityLabel("Rotation angle")
                     }
                 }
-                .background(Color.black)
-                .onChange(of: angle) { _, newValue in controller.rotationAngle = newValue }
-                .accessibilityLabel("Rotation angle")
+
+                if showAdjust {
+                    adjustPanel
+                        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                        .padding(12)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
 
-            if showAdjust { adjustPanel.background(.ultraThinMaterial) }
             toolbar.padding(.vertical, 10).background(.ultraThinMaterial)
         }
         .background(Color.black.ignoresSafeArea())
+        .animation(.snappy, value: showAdjust)
     }
 
     // MARK: - Adjust panel
