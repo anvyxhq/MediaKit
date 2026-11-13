@@ -22,6 +22,7 @@ camera.enableHardwareCameraControls()   // iPhone 16 Camera Control
 - ``CameraView``
 - ``CameraPreview``
 - ``CameraError``
+- ``CameraOutputKind``
 
 ### Scanning
 - ``DataScannerView``
@@ -31,3 +32,4 @@ camera.enableHardwareCameraControls()   // iPhone 16 Camera Control
 ### Device Info
 - ``CameraDeviceDetector``
 - ``CameraFocusUtilities``
+- ``CameraZoomLayout``

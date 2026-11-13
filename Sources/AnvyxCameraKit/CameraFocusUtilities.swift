@@ -12,10 +12,11 @@ import AVFoundation
 /// These are building blocks `CameraModel` doesn't expose directly — use them
 /// when you need finer control (custom exposure bias, macro/low-light checks).
 ///
-/// - Important: Every mutating call must run inside a
-///   `try device.lockForConfiguration()` / `device.unlockForConfiguration()`
-///   block — AVFoundation raises otherwise. The capability checks
-///   (`supportsMacroFocus`, `supportsLowLightBoost`) do not require the lock.
+/// - Important: Every mutating call must run while the device's configuration
+///   lock is held — AVFoundation raises otherwise. Use
+///   `AVCaptureDevice.withConfigurationLock(_:)`, which does not run its body
+///   when the lock cannot be taken. The capability checks (`wideAngleLens(of:)`,
+///   `supportsMacroFocus`, `supportsLowLightBoost`) do not require the lock.
 public enum CameraFocusUtilities {
 
     // MARK: - Focus mode
@@ -93,9 +94,24 @@ public enum CameraFocusUtilities {
 
     // MARK: - Capability checks (no lock required)
 
+    /// The wide-angle lens of `device`: the wide-angle constituent of a virtual
+    /// multi-lens device, or the device itself when it is a single lens.
+    ///
+    /// Lens properties such as `minimumFocusDistance` describe whichever lens
+    /// is active when read from a virtual device; read them from this lens to
+    /// get a stable answer.
+    public static func wideAngleLens(of device: AVCaptureDevice) -> AVCaptureDevice {
+        device.constituentDevices.first { $0.deviceType == .builtInWideAngleCamera } ?? device
+    }
+
     /// Whether the device is well suited to close-up / macro focus.
+    ///
+    /// The focus distance is read from the wide-angle lens (see
+    /// ``wideAngleLens(of:)``), so the answer does not change with the lens a
+    /// virtual device happens to be using.
     public static func supportsMacroFocus(_ device: AVCaptureDevice) -> Bool {
-        if device.minimumFocusDistance > 0, device.minimumFocusDistance < 150 { return true } // < 15cm
+        let focusDistance = wideAngleLens(of: device).minimumFocusDistance
+        if focusDistance > 0, focusDistance < 150 { return true } // < 15cm
         if device.deviceType == .builtInDualWideCamera {
             return device.constituentDevices.contains { $0.deviceType == .builtInUltraWideCamera }
         }

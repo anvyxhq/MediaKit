@@ -10,10 +10,21 @@ import UIKit
 import Observation
 
 /// Errors surfaced by `CameraModel`.
-public enum CameraError: Error, Sendable {
+public enum CameraError: Error, Sendable, Equatable {
     case unauthorized
+    /// No usable camera input could be attached to the session.
     case configurationFailed
     case captureFailed
+    /// The session refused an output the model needs; the session is left unconfigured.
+    case cannotAddOutput(CameraOutputKind)
+}
+
+/// The capture outputs `CameraModel` attaches to its session.
+public enum CameraOutputKind: Sendable, Equatable {
+    /// Still-photo capture.
+    case photo
+    /// Live video frames (see ``CameraModel/videoFrames()``).
+    case videoData
 }
 
 /// An `@Observable` AVFoundation camera controller (iOS 17+), modeled on Apple's
@@ -34,6 +45,11 @@ public final class CameraModel {
     public private(set) var zoomFactor: CGFloat = 1
     public private(set) var minZoomFactor: CGFloat = 1
     public private(set) var maxZoomFactor: CGFloat = 1
+    /// The current zoom relative to the wide-angle lens (1.0 = wide lens),
+    /// whichever lenses the device has. See ``setZoom(magnification:stayOnWideLens:)``.
+    public private(set) var zoomMagnification: CGFloat = 1
+    /// The zoom geometry of the active device (lens switch-over points and limits).
+    public private(set) var zoomLayout = CameraZoomLayout()
     public private(set) var isTorchOn = false
     public private(set) var error: CameraError?
     public var flashMode: FlashMode = .auto
@@ -72,12 +88,18 @@ public final class CameraModel {
     @ObservationIgnored private var interruptionTasks: [Task<Void, Never>] = []
     @ObservationIgnored private var captureRotationAngle: CGFloat = 90
 
+    // Lifecycle bookkeeping (main actor).
+    @ObservationIgnored private var configurationTask: Task<Void, Never>?
+    @ObservationIgnored private var startsWhenConfigured = false
+    @ObservationIgnored private var focusResetTask: Task<Void, Never>?
+
     public init() {
         observeInterruptions()
     }
 
     deinit {
         interruptionTasks.forEach { $0.cancel() }
+        focusResetTask?.cancel()
     }
 
     // MARK: - Interruptions
@@ -128,8 +150,29 @@ public final class CameraModel {
 
     // MARK: - Lifecycle
 
-    /// Request access (if needed) and build the session graph. Call once before `start()`.
+    /// Request access (if needed) and build the session graph. Call before `start()`.
+    ///
+    /// On failure ``error`` says why and the session is left empty, so the call
+    /// can be repeated. Calling it again after it succeeded does nothing, and a
+    /// call made while another is in flight waits for that one.
     public func configure() async {
+        if isConfigured { return }
+        if let configurationTask {
+            await configurationTask.value
+            return
+        }
+        let task = Task { @MainActor in
+            await self.performConfiguration()
+            self.configurationTask = nil
+            let shouldStart = self.startsWhenConfigured
+            self.startsWhenConfigured = false
+            if shouldStart, self.isConfigured { self.start() }
+        }
+        configurationTask = task
+        await task.value
+    }
+
+    private func performConfiguration() async {
         if authorizationStatus == .notDetermined {
             _ = await requestAccess()
         }
@@ -139,38 +182,71 @@ public final class CameraModel {
         }
 
         let position = self.position
-        await withCheckedContinuation { continuation in
+        let result: Result<Void, CameraError> = await withCheckedContinuation { continuation in
             queue.async { [self] in
-                session.beginConfiguration()
-                session.sessionPreset = .photo
-                if let device = Self.device(for: position),
-                   let input = try? AVCaptureDeviceInput(device: device),
-                   session.canAddInput(input) {
-                    session.addInput(input)
-                    videoInput = input
-                }
-                if session.canAddOutput(photoOutput) {
-                    photoOutput.maxPhotoQualityPrioritization = .quality
-                    session.addOutput(photoOutput)
-                }
-                videoDataOutput.alwaysDiscardsLateVideoFrames = true
-                videoDataOutput.videoSettings = [
-                    kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
-                ]
-                if session.canAddOutput(videoDataOutput) {
-                    session.addOutput(videoDataOutput)
-                }
-                session.commitConfiguration()
-                continuation.resume()
+                continuation.resume(returning: buildSessionGraph(for: position))
             }
         }
 
-        if videoInput == nil {
-            error = .configurationFailed
+        switch result {
+        case .failure(let failure):
+            error = failure
+        case .success:
+            error = nil
+            updateZoomRange()
+            isConfigured = true
+        }
+    }
+
+    /// Build the session graph. Runs on the session `queue`. The configuration
+    /// is always committed, and a failed build leaves the session empty.
+    nonisolated private func buildSessionGraph(for position: AVCaptureDevice.Position) -> Result<Void, CameraError> {
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        do throws(CameraError) {
+            Self.applyPreferredPreset(to: session)
+            guard let device = Self.device(for: position),
+                  let input = try? AVCaptureDeviceInput(device: device),
+                  session.canAddInput(input) else {
+                throw .configurationFailed
+            }
+            session.addInput(input)
+
+            photoOutput.maxPhotoQualityPrioritization = .quality
+            try Self.add(photoOutput, kind: .photo, to: session)
+
+            videoDataOutput.alwaysDiscardsLateVideoFrames = true
+            videoDataOutput.videoSettings = [
+                kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32BGRA,
+            ]
+            try Self.add(videoDataOutput, kind: .videoData, to: session)
+
+            videoInput = input
+            return .success(())
+        } catch {
+            session.outputs.forEach { session.removeOutput($0) }
+            session.inputs.forEach { session.removeInput($0) }
+            videoInput = nil
+            return .failure(error)
+        }
+    }
+
+    /// Use the photo preset when the session accepts it, else the best general one.
+    nonisolated static func applyPreferredPreset(to session: AVCaptureSession) {
+        for preset in [AVCaptureSession.Preset.photo, .high] where session.canSetSessionPreset(preset) {
+            session.sessionPreset = preset
             return
         }
-        updateZoomRange()
-        isConfigured = true
+    }
+
+    /// Add `output` to `session`, or throw when the session refuses it.
+    nonisolated static func add(
+        _ output: AVCaptureOutput,
+        kind: CameraOutputKind,
+        to session: AVCaptureSession
+    ) throws(CameraError) {
+        guard session.canAddOutput(output) else { throw .cannotAddOutput(kind) }
+        session.addOutput(output)
     }
 
     // MARK: - Live video frames
@@ -289,7 +365,16 @@ public final class CameraModel {
         }
     }
 
+    /// Start the session. Call after ``configure()``.
+    ///
+    /// A session that is not configured is never started: a call made while
+    /// `configure()` is in flight is remembered and runs once configuration has
+    /// been committed successfully; a call made before `configure()` does nothing.
     public func start() {
+        guard isConfigured else {
+            if configurationTask != nil { startsWhenConfigured = true }
+            return
+        }
         queue.async { [self] in
             guard !session.isRunning else { return }
             session.startRunning()
@@ -297,7 +382,9 @@ public final class CameraModel {
         }
     }
 
+    /// Stop the session, and drop a start that was waiting for `configure()`.
     public func stop() {
+        startsWhenConfigured = false
         queue.async { [self] in
             guard session.isRunning else { return }
             session.stopRunning()
@@ -351,6 +438,7 @@ public final class CameraModel {
     /// them — so a capture isn't taken mid-adjustment. Call before ``capturePhoto()``
     /// and pair with ``restoreContinuousFocus()`` afterwards.
     public func lockFocusAndExposureWhenStable(timeout: TimeInterval = 1.5) async {
+        cancelFocusReset()
         await withCheckedContinuation { continuation in
             queue.async { [self] in
                 guard let device = videoInput?.device else { continuation.resume(); return }
@@ -358,10 +446,9 @@ public final class CameraModel {
                 while device.isAdjustingFocus || device.isAdjustingExposure, Date() < deadline {
                     Thread.sleep(forTimeInterval: 0.05)
                 }
-                if (try? device.lockForConfiguration()) != nil {
+                try? device.withConfigurationLock { device in
                     if device.isFocusModeSupported(.locked) { device.focusMode = .locked }
                     if device.isExposureModeSupported(.locked) { device.exposureMode = .locked }
-                    device.unlockForConfiguration()
                 }
                 continuation.resume()
             }
@@ -372,15 +459,12 @@ public final class CameraModel {
     /// the near-range restriction, smooth AF, and centered focus/exposure.
     public func configureForDocumentScanning() {
         queue.async { [self] in
-            guard let device = videoInput?.device, (try? device.lockForConfiguration()) != nil else { return }
-            if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
-            if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = .near }
-            if device.isSmoothAutoFocusSupported { device.isSmoothAutoFocusEnabled = true }
-            let center = CGPoint(x: 0.5, y: 0.5)
-            if device.isFocusPointOfInterestSupported { device.focusPointOfInterest = center }
-            if device.isExposurePointOfInterestSupported { device.exposurePointOfInterest = center }
-            if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
-            device.unlockForConfiguration()
+            guard let device = videoInput?.device else { return }
+            try? device.withConfigurationLock { device in
+                if device.isAutoFocusRangeRestrictionSupported { device.autoFocusRangeRestriction = .near }
+                if device.isSmoothAutoFocusSupported { device.isSmoothAutoFocusEnabled = true }
+                Self.enableContinuousFocusAndExposure(on: device, recenter: true)
+            }
         }
     }
 
@@ -396,31 +480,70 @@ public final class CameraModel {
 
     /// Restore continuous autofocus / auto-exposure after a stabilized capture.
     public func restoreContinuousFocus() {
+        cancelFocusReset()
+        restoreContinuousFocus(recenter: false)
+    }
+
+    private func restoreContinuousFocus(recenter: Bool) {
         queue.async { [self] in
-            guard let device = videoInput?.device,
-                  (try? device.lockForConfiguration()) != nil else { return }
-            if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
-            if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
-            device.unlockForConfiguration()
+            guard let device = videoInput?.device else { return }
+            try? device.withConfigurationLock { device in
+                Self.enableContinuousFocusAndExposure(on: device, recenter: recenter)
+            }
         }
+    }
+
+    private func cancelFocusReset() {
+        focusResetTask?.cancel()
+        focusResetTask = nil
+    }
+
+    /// Continuous AF/AE, optionally aimed back at the frame center. Needs the
+    /// configuration lock.
+    nonisolated private static func enableContinuousFocusAndExposure(on device: AVCaptureDevice, recenter: Bool) {
+        let center = CGPoint(x: 0.5, y: 0.5)
+        if recenter, device.isFocusPointOfInterestSupported { device.focusPointOfInterest = center }
+        if device.isFocusModeSupported(.continuousAutoFocus) { device.focusMode = .continuousAutoFocus }
+        if recenter, device.isExposurePointOfInterestSupported { device.exposurePointOfInterest = center }
+        if device.isExposureModeSupported(.continuousAutoExposure) { device.exposureMode = .continuousAutoExposure }
     }
 
     // MARK: - Controls
 
+    /// Switch between the back and front camera.
+    ///
+    /// Before ``configure()`` this only chooses the position to configure. If
+    /// the other camera cannot be attached, the current one is kept and
+    /// ``error`` is set.
     public func switchCamera() {
         let newPosition: AVCaptureDevice.Position = position == .back ? .front : .back
+        guard isConfigured else {
+            if configurationTask == nil { position = newPosition }
+            return
+        }
+        cancelFocusReset()
         queue.async { [self] in
+            let previous = videoInput
+            var switched = false
             session.beginConfiguration()
-            if let videoInput { session.removeInput(videoInput) }
+            if let previous { session.removeInput(previous) }
             if let device = Self.device(for: newPosition),
                let input = try? AVCaptureDeviceInput(device: device),
                session.canAddInput(input) {
                 session.addInput(input)
                 videoInput = input
+                switched = true
+            } else if let previous, session.canAddInput(previous) {
+                session.addInput(previous)
             }
             session.commitConfiguration()
             Task { @MainActor in
+                guard switched else {
+                    self.error = .configurationFailed
+                    return
+                }
                 self.position = newPosition
+                self.isTorchOn = false
                 self.updateZoomRange()
                 if let device = self.videoInput?.device, let layer = self.previewLayer {
                     self.createRotationCoordinator(for: device, previewLayer: layer)
@@ -429,43 +552,126 @@ public final class CameraModel {
         }
     }
 
-    /// Set zoom, clamped to the device's supported range.
+    /// Set the device zoom factor, clamped to the device's supported range.
+    ///
+    /// The factor is on the device's own scale, where 1.0 is the first lens of
+    /// the device — the ultra-wide lens on most multi-lens cameras. Use
+    /// ``setZoom(magnification:stayOnWideLens:)`` for a scale that means the
+    /// same on every device.
     public func setZoom(_ factor: CGFloat) {
+        guard factor.isFinite else { return }
         queue.async { [self] in
             guard let device = videoInput?.device else { return }
-            let clamped = max(device.minAvailableVideoZoomFactor, min(factor, device.maxAvailableVideoZoomFactor))
-            try? device.lockForConfiguration()
-            device.videoZoomFactor = clamped
-            device.unlockForConfiguration()
-            Task { @MainActor in self.zoomFactor = clamped }
+            let layout = CameraZoomLayout(device: device)
+            applyZoom(layout.clampedZoomFactor(factor), layout: layout, to: device)
+        }
+    }
+
+    /// Set the zoom relative to the wide-angle lens: 1.0 frames like the wide
+    /// lens, 2.0 twice as close, values below 1.0 reach the ultra-wide lens
+    /// where the device has one.
+    ///
+    /// - Parameters:
+    ///   - magnification: Zoom relative to the wide lens.
+    ///   - stayOnWideLens: When `true`, the zoom is kept on the wide lens: it
+    ///     stops just under the point where the device would switch to a longer
+    ///     lens, and does not go below 1.0. Useful for close subjects, which a
+    ///     telephoto lens cannot focus on.
+    ///
+    /// The result is always clamped to what the device and its active format
+    /// accept. See ``CameraZoomLayout`` for the math.
+    public func setZoom(magnification: CGFloat, stayOnWideLens: Bool = false) {
+        guard magnification.isFinite else { return }
+        queue.async { [self] in
+            guard let device = videoInput?.device else { return }
+            let layout = CameraZoomLayout(device: device)
+            let factor = layout.zoomFactor(forMagnification: magnification, stayOnWideLens: stayOnWideLens)
+            applyZoom(factor, layout: layout, to: device)
+        }
+    }
+
+    /// Runs on the session `queue`. `factor` must already be inside the device range.
+    nonisolated private func applyZoom(_ factor: CGFloat, layout: CameraZoomLayout, to device: AVCaptureDevice) {
+        guard (try? device.withConfigurationLock { $0.videoZoomFactor = factor }) != nil else { return }
+        Task { @MainActor in
+            self.zoomLayout = layout
+            self.zoomFactor = factor
+            self.zoomMagnification = layout.magnification(forZoomFactor: factor)
+        }
+    }
+
+    /// Keep a multi-lens device on the lens its zoom factor selects.
+    ///
+    /// By default such a device also switches lens when focus or exposure run
+    /// past the limits of the active lens (for example a subject held close),
+    /// which makes the preview jump. Pinning removes that automatic switch; the
+    /// zoom factor still selects the lens. No-op where the device does not
+    /// support it. Undo with ``unpinActiveLens()``.
+    public func pinActiveLens() {
+        setLensSwitching(.restricted)
+    }
+
+    /// Let a multi-lens device choose its lens automatically again
+    /// (see ``pinActiveLens()``).
+    public func unpinActiveLens() {
+        setLensSwitching(.auto)
+    }
+
+    private func setLensSwitching(_ behavior: AVCaptureDevice.PrimaryConstituentDeviceSwitchingBehavior) {
+        queue.async { [self] in
+            guard let device = videoInput?.device,
+                  device.activePrimaryConstituentDeviceSwitchingBehavior != .unsupported else { return }
+            try? device.withConfigurationLock {
+                $0.setPrimaryConstituentDeviceSwitchingBehavior(behavior, restrictedSwitchingBehaviorConditions: [])
+            }
         }
     }
 
     /// Tap-to-focus using a point in the preview layer's coordinate space.
-    public func focus(atViewPoint point: CGPoint) {
+    ///
+    /// Focus and exposure are aimed at the point where the device supports it.
+    /// After `resetAfter` the camera goes back to continuous autofocus /
+    /// auto-exposure at the frame center; a new tap restarts that delay.
+    ///
+    /// - Parameters:
+    ///   - point: The tapped point, in the preview layer's coordinates.
+    ///   - resetAfter: How long the tapped point is kept. Pass `nil` to keep it
+    ///     until ``restoreContinuousFocus()`` is called.
+    public func focus(atViewPoint point: CGPoint, resetAfter: Duration? = .seconds(3)) {
         guard let previewLayer else { return }
         let devicePoint = previewLayer.captureDevicePointConverted(fromLayerPoint: point)
+        cancelFocusReset()
         queue.async { [self] in
             guard let device = videoInput?.device else { return }
-            try? device.lockForConfiguration()
-            if device.isFocusPointOfInterestSupported {
-                device.focusPointOfInterest = devicePoint
-                device.focusMode = .autoFocus
+            try? device.withConfigurationLock { device in
+                if device.isFocusPointOfInterestSupported,
+                   let mode = [AVCaptureDevice.FocusMode.autoFocus, .continuousAutoFocus]
+                    .first(where: device.isFocusModeSupported) {
+                    device.focusPointOfInterest = devicePoint
+                    device.focusMode = mode
+                }
+                if device.isExposurePointOfInterestSupported,
+                   let mode = [AVCaptureDevice.ExposureMode.autoExpose, .continuousAutoExposure]
+                    .first(where: device.isExposureModeSupported) {
+                    device.exposurePointOfInterest = devicePoint
+                    device.exposureMode = mode
+                }
             }
-            if device.isExposurePointOfInterestSupported {
-                device.exposurePointOfInterest = devicePoint
-                device.exposureMode = .autoExpose
-            }
-            device.unlockForConfiguration()
+        }
+        guard let resetAfter else { return }
+        focusResetTask = Task { @MainActor [weak self] in
+            guard (try? await Task.sleep(for: resetAfter)) != nil, !Task.isCancelled, let self else { return }
+            self.focusResetTask = nil
+            self.restoreContinuousFocus(recenter: true)
         }
     }
 
     public func setTorch(_ on: Bool) {
         queue.async { [self] in
-            guard let device = videoInput?.device, device.hasTorch else { return }
-            try? device.lockForConfiguration()
-            device.torchMode = on ? .on : .off
-            device.unlockForConfiguration()
+            guard let device = videoInput?.device, device.hasTorch, device.isTorchAvailable else { return }
+            let mode: AVCaptureDevice.TorchMode = on ? .on : .off
+            guard device.isTorchModeSupported(mode),
+                  (try? device.withConfigurationLock { $0.torchMode = mode }) != nil else { return }
             Task { @MainActor in self.isTorchOn = on }
         }
     }
@@ -474,9 +680,12 @@ public final class CameraModel {
 
     private func updateZoomRange() {
         guard let device = videoInput?.device else { return }
-        minZoomFactor = device.minAvailableVideoZoomFactor
-        maxZoomFactor = min(device.maxAvailableVideoZoomFactor, 10)
+        let layout = CameraZoomLayout(device: device)
+        zoomLayout = layout
+        minZoomFactor = layout.minZoomFactor
+        maxZoomFactor = layout.maxZoomFactor
         zoomFactor = device.videoZoomFactor
+        zoomMagnification = layout.magnification(forZoomFactor: device.videoZoomFactor)
     }
 
     private func createRotationCoordinator(for device: AVCaptureDevice, previewLayer: AVCaptureVideoPreviewLayer) {
