@@ -2,7 +2,7 @@
 
 > Camera capture, image processing, and cropping for modern SwiftUI apps.
 
-![Swift](https://img.shields.io/badge/Swift-5.9-F05138?logo=swift&logoColor=white)
+![Swift](https://img.shields.io/badge/Swift-6.2-F05138?logo=swift&logoColor=white)
 ![Platform](https://img.shields.io/badge/iOS-18%2B-000000?logo=apple)
 ![SPM](https://img.shields.io/badge/SwiftPM-compatible-brightgreen)
 ![License](https://img.shields.io/badge/License-MIT-blue)
@@ -20,7 +20,7 @@ No third-party dependencies — only AVFoundation, VisionKit, CoreImage, UIKit, 
 ## Requirements
 
 - iOS 18.0+
-- Swift 5.9+ / Xcode 16+
+- Swift 6.2+ / Xcode 26+
 
 ## Installation
 
@@ -69,6 +69,10 @@ let data = image.optimizedForStorage(maxDimension: 2048, jpegQuality: 0.8)
 | `AnvyxImageKit` | `UIImage`/`CVPixelBuffer` conversion, resizing, storage-optimised encoding, cropping. |
 | `AnvyxCameraKit` | SwiftUI camera, document scanner, live data scanner, photo-library picker. |
 | `AnvyxCropKit` | Crop / rotate / flip editor with adjustments, color filters, and undo/redo. |
+
+## Host app requirements
+
+`AnvyxCameraKit` needs `NSCameraUsageDescription` in `Info.plist`. Camera features need a real device.
 
 ## License
 
